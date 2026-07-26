@@ -1,0 +1,4 @@
+# Normalize line endings so the bootstrap scripts work on every OS regardless of
+# each contributor's core.autocrlf setting (AC11).
+setup.sh   text eol=lf
+setup.bat  text eol=crlf

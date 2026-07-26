@@ -1,0 +1,6 @@
+# Project repositories cloned by setup.sh / setup.bat — never track them in SlopOn.dev
+/frontend/
+/backend/
+/gpt_markdown/
+/re-editor/
+/re-highlight/
