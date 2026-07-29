@@ -1,0 +1,288 @@
+name: release
+
+on:
+  workflow_dispatch:
+
+# Minimum token permissions (security guideline Rule 2): read at the
+# workflow level; only the publish job escalates to contents: write.
+permissions:
+  contents: read
+
+# Serialize manual dispatches so two runs can never race the same release.
+# cancel-in-progress stays false: a release in flight must complete.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      frontend_tag: ${{ steps.resolve.outputs.frontend_tag }}
+      frontend_version: ${{ steps.resolve.outputs.frontend_version }}
+      backend_tag: ${{ steps.resolve.outputs.backend_tag }}
+      backend_version: ${{ steps.resolve.outputs.backend_version }}
+    steps:
+      - name: Guard — releases only from main
+        if: github.ref_name != 'main'
+        # GITHUB_REF_NAME is a runner-provided env var — safe to use in run:
+        # (no ${{ github.event.* }} interpolation, guideline Rule 5).
+        run: |
+          echo "::error::Dispatch this workflow from the 'main' branch (dispatched from '$GITHUB_REF_NAME')."
+          exit 1
+
+      - name: Resolve upstream latest releases
+        id: resolve
+        # Step-level env only — the token is never interpolated into run:
+        # (guideline Rule 5).
+        env:
+          GH_TOKEN: ${{ secrets.SLOPON_CI_CHECKOUT_TOKEN }}
+        run: |
+          if ! frontend_tag=$(gh release view --repo DigiDecode/slopon_frontend --json tagName --jq '.tagName'); then
+            echo "::error::Could not read the latest release of DigiDecode/slopon_frontend — check that SLOPON_CI_CHECKOUT_TOKEN has access to that repo."
+            exit 1
+          fi
+          if ! backend_tag=$(gh release view --repo DigiDecode/slopon_backend --json tagName --jq '.tagName'); then
+            echo "::error::Could not read the latest release of DigiDecode/slopon_backend — check that SLOPON_CI_CHECKOUT_TOKEN has access to that repo."
+            exit 1
+          fi
+          echo "frontend_tag=$frontend_tag" >> "$GITHUB_OUTPUT"
+          echo "backend_tag=$backend_tag" >> "$GITHUB_OUTPUT"
+          echo "frontend_version=${frontend_tag#v}" >> "$GITHUB_OUTPUT"
+          echo "backend_version=${backend_tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Resolved frontend $frontend_tag, backend $backend_tag"
+
+      - name: Assert expected assets exist
+        env:
+          GH_TOKEN: ${{ secrets.SLOPON_CI_CHECKOUT_TOKEN }}
+          FRONTEND_TAG: ${{ steps.resolve.outputs.frontend_tag }}
+          BACKEND_TAG: ${{ steps.resolve.outputs.backend_tag }}
+        run: |
+          frontend_assets=$(gh release view "$FRONTEND_TAG" --repo DigiDecode/slopon_frontend --json assets --jq '.assets[].name')
+          backend_assets=$(gh release view "$BACKEND_TAG" --repo DigiDecode/slopon_backend --json assets --jq '.assets[].name')
+          missing=0
+          for name in \
+            slopon_dev-latest-windows-x64.zip \
+            slopon_dev-latest-linux-x64.tar.gz \
+            slopon_dev-latest-macos-x64.zip \
+            slopon_dev-latest-macos-arm64.zip; do
+            if ! grep -qx "$name" <<< "$frontend_assets"; then
+              echo "::error::Asset '$name' missing from DigiDecode/slopon_frontend release $FRONTEND_TAG"
+              missing=1
+            fi
+          done
+          if ! grep -qx "slopon-backend-latest.zip" <<< "$backend_assets"; then
+            echo "::error::Asset 'slopon-backend-latest.zip' missing from DigiDecode/slopon_backend release $BACKEND_TAG"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+  package:
+    name: package (${{ matrix.platform }})
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true   # all-or-nothing release: one leg failure skips publish
+      matrix:
+        include:
+          - { platform: windows-x64, os: ubuntu-24.04, frontend_asset: slopon_dev-latest-windows-x64.zip }
+          - { platform: linux-x64, os: ubuntu-24.04, frontend_asset: slopon_dev-latest-linux-x64.tar.gz }
+          - { platform: macos-x64, os: macos-15, frontend_asset: slopon_dev-latest-macos-x64.zip }
+          - { platform: macos-arm64, os: macos-15, frontend_asset: slopon_dev-latest-macos-arm64.zip }
+    steps:
+      - name: Checkout SlopOn.dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Only needed for docs/release-README.md; nothing later requires the
+          # persisted token (gh uses GH_TOKEN).
+          persist-credentials: false
+
+      - name: Download upstream release assets
+        # Isolated download paths (guideline Rule 7): downloads can never
+        # touch the checkout. Binaries are repackaged, never executed.
+        env:
+          GH_TOKEN: ${{ secrets.SLOPON_CI_CHECKOUT_TOKEN }}
+          FRONTEND_TAG: ${{ needs.resolve.outputs.frontend_tag }}
+          BACKEND_TAG: ${{ needs.resolve.outputs.backend_tag }}
+          FRONTEND_ASSET: ${{ matrix.frontend_asset }}
+        run: |
+          mkdir -p downloads/frontend downloads/backend
+          gh release download "$FRONTEND_TAG" --repo DigiDecode/slopon_frontend \
+            --pattern "$FRONTEND_ASSET" --dir downloads/frontend --clobber
+          gh release download "$BACKEND_TAG" --repo DigiDecode/slopon_backend \
+            --pattern "slopon-backend-latest.zip" --dir downloads/backend --clobber
+
+      - name: Assemble combined folder
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          FRONTEND_ASSET: ${{ matrix.frontend_asset }}
+        run: |
+          name="slopon-latest-$PLATFORM"
+          stage="stage/$name"
+          mkdir -p "$stage/frontend"
+          # Frontend payload: upstream archives have no wrapping folder, so
+          # everything extracts directly under frontend/.
+          case "$FRONTEND_ASSET" in
+            *.tar.gz)
+              tar -xzf "downloads/frontend/$FRONTEND_ASSET" -C "$stage/frontend"
+              ;;
+            *.zip)
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                # ditto (not unzip) preserves framework symlinks.
+                ditto -x -k "downloads/frontend/$FRONTEND_ASSET" "$stage/frontend"
+              else
+                unzip -q "downloads/frontend/$FRONTEND_ASSET" -d "$stage/frontend"
+              fi
+              ;;
+          esac
+          # Backend payload: its zip already wraps everything in a top-level
+          # backend/ folder, so it lands exactly right when extracted here.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -x -k "downloads/backend/slopon-backend-latest.zip" "$stage"
+          else
+            unzip -q "downloads/backend/slopon-backend-latest.zip" -d "$stage"
+          fi
+          cp docs/release-README.md "$stage/README.md"
+
+      - name: Package combined zip
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          name="slopon-latest-$PLATFORM"
+          mkdir -p out
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # ditto (not zip) preserves framework symlinks inside the .app.
+            ditto -c -k --keepParent "stage/$name" "out/$name.zip"
+          else
+            # -y stores any symlinks as symlinks; exec bits are recorded.
+            (cd stage && zip -q -r -y "../out/$name.zip" "$name")
+          fi
+
+      - name: Verify shipped zip
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          name="slopon-latest-$PLATFORM"
+          mkdir -p verify-tmp
+          # Re-extract the shipped zip with the same tool that packaged it,
+          # then assert against that extraction — not the staging dir.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -x -k "out/$name.zip" verify-tmp
+          else
+            unzip -q "out/$name.zip" -d verify-tmp
+          fi
+          root="verify-tmp/$name"
+          require() {
+            if [ ! "$1" "$2" ]; then
+              echo "::error::Shipped zip check failed: expected $1 '$2'"
+              exit 1
+            fi
+          }
+          require -f "$root/README.md"
+          require -f "$root/backend/index.js"
+          require -f "$root/backend/package.json"
+          case "$PLATFORM" in
+            windows-x64)
+              require -f "$root/frontend/slopon_dev.exe"
+              require -f "$root/frontend/flutter_windows.dll"
+              ;;
+            linux-x64)
+              # exec bit must survive the zip round-trip.
+              require -x "$root/frontend/slopon_dev"
+              require -f "$root/frontend/lib/libapp.so"
+              ;;
+            macos-x64|macos-arm64)
+              require -f "$root/frontend/slopon_dev.app/Contents/Info.plist"
+              # framework symlink must survive — the macOS corruption guard.
+              require -L "$root/frontend/slopon_dev.app/Contents/Frameworks/FlutterMacOS.framework/FlutterMacOS"
+              ;;
+            *)
+              echo "::error::Unknown platform '$PLATFORM'"
+              exit 1
+              ;;
+          esac
+          echo "Shipped zip verified: $name.zip"
+
+      - name: Upload combined zip
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: combined-${{ matrix.platform }}
+          path: out/slopon-latest-${{ matrix.platform }}.zip
+          if-no-files-found: error
+          retention-days: 7   # intermediate only; the release is the deliverable
+
+  publish:
+    name: publish
+    # resolve is a direct dependency (not just transitive via package)
+    # because the release notes quote its version outputs — the
+    # needs.<job>.outputs context only covers direct needs.
+    needs: [resolve, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write   # create/update releases + tags (Rule 2: job-scoped)
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          # Isolated path (Rule 7). Without a name: input all four artifacts
+          # land under dist/combined-<platform>/.
+          path: dist
+
+      - name: Write checksums and release notes
+        env:
+          FRONTEND_VERSION: ${{ needs.resolve.outputs.frontend_version }}
+          BACKEND_VERSION: ${{ needs.resolve.outputs.backend_version }}
+        run: |
+          {
+            echo "## SlopOn — latest builds"
+            echo
+            echo "Combined customer bundle: slopon_dev frontend + slopon-backend."
+            echo
+            echo "- Frontend version: $FRONTEND_VERSION"
+            echo "- Backend version: $BACKEND_VERSION"
+            echo
+            echo "| Platform | Asset | SHA-256 |"
+            echo "|---|---|---|"
+            for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
+              zip="dist/combined-$platform/slopon-latest-$platform.zip"
+              sha=$(sha256sum "$zip" | awk '{print $1}')
+              echo "| $platform | slopon-latest-$platform.zip | \`$sha\` |"
+            done
+            echo
+            echo "Each zip contains \`README.md\`, \`frontend/\` and \`backend/\`. The backend requires Node.js ≥ 20."
+            echo
+            echo "Artifacts are **unsigned**: expect a Gatekeeper warning (macOS) or SmartScreen warning (Windows) on first launch."
+          } > notes.md
+          cat notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout in this job, so gh cannot discover the repo from a
+          # git remote — point it at SlopOn.dev explicitly.
+          GH_REPO: DigiDecode/SlopOn.dev
+        run: |
+          # "latest" here is the git TAG name — distinct from GitHub's separate
+          # "latest release" marker, which --latest also sets on first create.
+          mapfile -t files < <(find dist -name 'slopon-latest-*.zip' | sort)
+          if [ "${#files[@]}" -ne 4 ]; then
+            echo "::error::Expected exactly 4 zips to publish, found ${#files[@]}: ${files[*]:-none}"
+            exit 1
+          fi
+          if gh release view "latest" >/dev/null 2>&1; then
+            echo "Release 'latest' exists — overwriting assets and notes in place"
+            gh release upload "latest" "${files[@]}" --clobber
+            gh release edit "latest" --notes-file notes.md
+          else
+            echo "Creating release 'latest'"
+            gh release create "latest" "${files[@]}" \
+              --title "SlopOn (latest)" \
+              --notes-file notes.md \
+              --latest
+          fi
