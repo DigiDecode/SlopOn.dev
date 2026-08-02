@@ -24,11 +24,9 @@ By exercising any rights under this License, You accept and agree to be bound by
 
 **"Gross Revenue"** means all gross revenue, receipts, and income of any kind, worldwide, in any currency, without deduction of costs or expenses.
 
-**"Total Expenditure"** means all expenses and expenditures of any kind, worldwide, in any currency, whether operating or capital.
-
 **"Control"** means ownership of more than fifty percent (50%) of the voting securities or other ownership interests of an entity, or the power to direct or cause the direction of its management and policies, and **"Affiliates"** means all entities that Control, are Controlled by, or are under common Control with an entity.
 
-**"Threshold"** means the financial limit described in this paragraph. An Organization **"exceeds the Threshold"** if, aggregated across the Organization and all of its Affiliates, either Gross Revenue or Total Expenditure is (a) equal to or greater than USD 120,000 (or the foreign-currency equivalent) over the trailing twelve (12) months, or (b) equal to or greater than USD 10,000 (or the foreign-currency equivalent) in any single calendar month within the last three (3) months. For the avoidance of doubt, an Organization exactly at either figure exceeds the Threshold.
+**"Threshold"** means the financial limit described in this paragraph. An Organization **"exceeds the Threshold"** if, aggregated across the Organization and all of its Affiliates, Gross Revenue is equal to or greater than USD 100,000 (or the foreign-currency equivalent) over the trailing twelve (12) months. For the avoidance of doubt, an Organization exactly at this figure exceeds the Threshold.
 
 **"Modify"** means to adapt, translate, alter, or create derivative works of the Software, and **"Derivative Work"** means any work based on or derived from the Software that would constitute a derivative work under applicable copyright law. Output is not a Derivative Work (see Section 3).
 
@@ -68,7 +66,7 @@ No entity type is exempt from the Threshold. Charities, non-profit organizations
 
 If Your use of the Software is not a Permitted Free Use, You must obtain a commercial license from Licensor before exercising any rights in the Software, subject only to the grace period below.
 
-The Threshold tests are applied to Gross Revenue and Total Expenditure independently: exceeding either metric under either test means the Organization exceeds the Threshold. Amounts are aggregated across the Organization and all of its Affiliates. Amounts in currencies other than USD are converted at prevailing exchange rates for the relevant period.
+The Threshold is applied to Gross Revenue. Amounts are aggregated across the Organization and all of its Affiliates. Amounts in currencies other than USD are converted at prevailing exchange rates for the relevant period.
 
 **Grace period.** The first time an Organization exceeds the Threshold, it may continue using the Software for up to ninety (90) days from that date while it purchases a commercial license; use during the grace period is a Permitted Free Use. An Organization is entitled to one grace period only: if it later ceases to exceed the Threshold and subsequently exceeds it again, no further grace period applies. Continued use of the Software after the grace period without a commercial license is a breach of this License (see Section 9).
 
