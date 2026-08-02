@@ -2,7 +2,7 @@
 
 ## License Parameters
 
-**Licensor:** [Full Legal Name], trading as SlopOn (https://slopon.dev)
+**Licensor:** SlopOn (https://slopon.dev)
 
 **Licensed Work:** SlopOn, the agentic coding harness, including each version of the Software released or otherwise made available by the Licensor.
 
