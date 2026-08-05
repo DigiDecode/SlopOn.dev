@@ -1,4 +1,4 @@
-# SlopOn.dev
+# Development workspace setup
 
 This is a **meta-repository** for the SlopOn project. It does not contain application code — instead it ships bootstrap scripts (`setup.sh` for macOS/Linux, `setup.bat` for Windows) that clone and keep in sync all of the project's repositories as sibling folders inside this directory. Run one script on a fresh machine and you get the entire workspace.
 
