@@ -1,5 +1,3 @@
-![SlopOn](images/og.png)
-
 > [!IMPORTANT]
 > This repository is currently a **placeholder** and does not host the project's
 > source code. The source code will be made available in this repository once it
