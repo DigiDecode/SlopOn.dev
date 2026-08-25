@@ -90,10 +90,10 @@ jobs:
       fail-fast: true   # all-or-nothing release: one leg failure skips publish
       matrix:
         include:
-          - { platform: windows-x64, os: ubuntu-24.04, frontend_asset: slopon_dev-latest-windows-x64.zip }
-          - { platform: linux-x64, os: ubuntu-24.04, frontend_asset: slopon_dev-latest-linux-x64.tar.gz }
-          - { platform: macos-x64, os: macos-15, frontend_asset: slopon_dev-latest-macos-x64.zip }
-          - { platform: macos-arm64, os: macos-15, frontend_asset: slopon_dev-latest-macos-arm64.zip }
+          - { platform: windows-x64, os: ubuntu-24.04, frontend_asset: slopon_dev-latest-windows-x64.zip,   ext: zip    }
+          - { platform: linux-x64,    os: ubuntu-24.04, frontend_asset: slopon_dev-latest-linux-x64.tar.gz, ext: tar.gz }
+          - { platform: macos-x64,    os: macos-15,     frontend_asset: slopon_dev-latest-macos-x64.zip,    ext: zip    }
+          - { platform: macos-arm64,  os: macos-15,     frontend_asset: slopon_dev-latest-macos-arm64.zip,  ext: zip    }
     steps:
       - name: Checkout SlopOn.dev
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,7 +122,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           FRONTEND_ASSET: ${{ matrix.frontend_asset }}
         run: |
-          name="slopon-latest-$PLATFORM"
+          name="slopon-$PLATFORM"
           stage="stage/$name"
           mkdir -p "$stage/frontend"
           # Frontend payload: upstream archives have no wrapping folder, so
@@ -149,37 +149,55 @@ jobs:
           fi
           cp docs/release-README.md "$stage/README.md"
 
-      - name: Package combined zip
+      - name: Package combined archive
         env:
           PLATFORM: ${{ matrix.platform }}
+          EXT: ${{ matrix.ext }}
         run: |
-          name="slopon-latest-$PLATFORM"
+          name="slopon-$PLATFORM"
           mkdir -p out
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            # ditto (not zip) preserves framework symlinks inside the .app.
-            ditto -c -k --keepParent "stage/$name" "out/$name.zip"
-          else
-            # -y stores any symlinks as symlinks; exec bits are recorded.
-            (cd stage && zip -q -r -y "../out/$name.zip" "$name")
-          fi
+          case "$EXT" in
+            tar.gz)
+              # tar preserves exec bits and symlinks; single top-level dir.
+              tar -czf "out/$name.tar.gz" -C stage "$name"
+              ;;
+            zip)
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                # ditto (not zip) preserves framework symlinks inside the .app.
+                ditto -c -k --keepParent "stage/$name" "out/$name.zip"
+              else
+                # -y stores any symlinks as symlinks; exec bits are recorded.
+                (cd stage && zip -q -r -y "../out/$name.zip" "$name")
+              fi
+              ;;
+          esac
 
-      - name: Verify shipped zip
+      - name: Verify shipped archive
         env:
           PLATFORM: ${{ matrix.platform }}
+          EXT: ${{ matrix.ext }}
         run: |
-          name="slopon-latest-$PLATFORM"
+          name="slopon-$PLATFORM"
+          archive="out/$name.$EXT"
           mkdir -p verify-tmp
-          # Re-extract the shipped zip with the same tool that packaged it,
-          # then assert against that extraction — not the staging dir.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            ditto -x -k "out/$name.zip" verify-tmp
-          else
-            unzip -q "out/$name.zip" -d verify-tmp
-          fi
+          # Re-extract the shipped archive with the same tool family that
+          # packaged it, then assert against that extraction — not the staging dir.
+          case "$EXT" in
+            tar.gz)
+              tar -xzf "$archive" -C verify-tmp
+              ;;
+            zip)
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                ditto -x -k "$archive" verify-tmp
+              else
+                unzip -q "$archive" -d verify-tmp
+              fi
+              ;;
+          esac
           root="verify-tmp/$name"
           require() {
             if [ ! "$1" "$2" ]; then
-              echo "::error::Shipped zip check failed: expected $1 '$2'"
+              echo "::error::Shipped archive check failed: expected $1 '$2'"
               exit 1
             fi
           }
@@ -192,7 +210,7 @@ jobs:
               require -f "$root/frontend/flutter_windows.dll"
               ;;
             linux-x64)
-              # exec bit must survive the zip round-trip.
+              # exec bit must survive the archive round-trip (tar preserves it).
               require -x "$root/frontend/slopon_dev"
               require -f "$root/frontend/lib/libapp.so"
               ;;
@@ -206,13 +224,13 @@ jobs:
               exit 1
               ;;
           esac
-          echo "Shipped zip verified: $name.zip"
+          echo "Shipped archive verified: $name.$EXT"
 
-      - name: Upload combined zip
+      - name: Upload combined archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: combined-${{ matrix.platform }}
-          path: out/slopon-latest-${{ matrix.platform }}.zip
+          path: out/slopon-${{ matrix.platform }}.${{ matrix.ext }}
           if-no-files-found: error
           retention-days: 7   # intermediate only; the release is the deliverable
 
@@ -240,7 +258,7 @@ jobs:
           BACKEND_VERSION: ${{ needs.resolve.outputs.backend_version }}
         run: |
           {
-            echo "## SlopOn — latest builds"
+            echo "## SlopOn v$BACKEND_VERSION"
             echo
             echo "Combined customer bundle: slopon_dev frontend + slopon-backend."
             echo
@@ -250,12 +268,17 @@ jobs:
             echo "| Platform | Asset | SHA-256 |"
             echo "|---|---|---|"
             for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
-              zip="dist/combined-$platform/slopon-latest-$platform.zip"
-              sha=$(sha256sum "$zip" | awk '{print $1}')
-              echo "| $platform | slopon-latest-$platform.zip | \`$sha\` |"
+              # Keep this platform→ext mapping in sync with the package matrix.
+              case "$platform" in
+                linux-x64) ext=tar.gz ;;
+                *) ext=zip ;;
+              esac
+              file="dist/combined-$platform/slopon-$platform.$ext"
+              sha=$(sha256sum "$file" | awk '{print $1}')
+              echo "| $platform | slopon-$platform.$ext | \`$sha\` |"
             done
             echo
-            echo "Each zip contains \`README.md\`, \`frontend/\` and \`backend/\`. The backend requires Node.js ≥ 20."
+            echo "Each archive contains \`README.md\`, \`frontend/\` and \`backend/\`. The backend requires Node.js ≥ 20."
             echo
             echo "Artifacts are **unsigned**: expect a Gatekeeper warning (macOS) or SmartScreen warning (Windows) on first launch."
           } > notes.md
@@ -267,22 +290,26 @@ jobs:
           # No checkout in this job, so gh cannot discover the repo from a
           # git remote — point it at SlopOn.dev explicitly.
           GH_REPO: DigiDecode/SlopOn.dev
+          BACKEND_VERSION: ${{ needs.resolve.outputs.backend_version }}
         run: |
-          # "latest" here is the git TAG name — distinct from GitHub's separate
-          # "latest release" marker, which --latest also sets on first create.
-          mapfile -t files < <(find dist -name 'slopon-latest-*.zip' | sort)
+          # The release tag is the backend version. GitHub's separate "Latest
+          # release" marker is what .../releases/latest/download/... resolves to;
+          # it is (re-)asserted on BOTH the create and the update path.
+          tag="v$BACKEND_VERSION"
+          # Keep this find pattern in sync with the package matrix asset names.
+          mapfile -t files < <(find dist \( -name 'slopon-*.tar.gz' -o -name 'slopon-*.zip' \) | sort)
           if [ "${#files[@]}" -ne 4 ]; then
-            echo "::error::Expected exactly 4 zips to publish, found ${#files[@]}: ${files[*]:-none}"
+            echo "::error::Expected exactly 4 archives to publish, found ${#files[@]}: ${files[*]:-none}"
             exit 1
           fi
-          if gh release view "latest" >/dev/null 2>&1; then
-            echo "Release 'latest' exists — overwriting assets and notes in place"
-            gh release upload "latest" "${files[@]}" --clobber
-            gh release edit "latest" --notes-file notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists — overwriting assets and notes in place, re-asserting Latest"
+            gh release upload "$tag" "${files[@]}" --clobber
+            gh release edit "$tag" --latest --notes-file notes.md
           else
-            echo "Creating release 'latest'"
-            gh release create "latest" "${files[@]}" \
-              --title "SlopOn (latest)" \
+            echo "Creating release $tag"
+            gh release create "$tag" "${files[@]}" \
+              --title "SlopOn $tag" \
               --notes-file notes.md \
               --latest
           fi

@@ -2,23 +2,23 @@
 
 SlopOn bundles two things: the **slopon_dev** desktop app (the frontend) and
 the **slopon-backend** server, a self-hosted Node.js backend that the app
-connects to over WebSocket. This zip contains both, ready to run on your
+connects to over WebSocket. This archive contains both, ready to run on your
 machine.
 
 ## Contents
 
 ```
-slopon-latest-<platform>/
+slopon-<platform>/
   README.md        ← this file
   frontend/        ← the slopon_dev desktop app for your platform
   backend/         ← the self-hosted backend server (Node.js)
 ```
 
-- **Windows** (`slopon-latest-windows-x64.zip`): `frontend/` contains
+- **Windows** (`slopon-windows-x64.zip`): `frontend/` contains
   `slopon_dev.exe` plus its DLLs and a `data/` folder.
-- **Linux** (`slopon-latest-linux-x64.zip`): `frontend/` contains the
+- **Linux** (`slopon-linux-x64.tar.gz`): `frontend/` contains the
   `slopon_dev` executable, `lib/` (shared libraries) and `data/`.
-- **macOS** (`slopon-latest-macos-x64.zip` / `slopon-latest-macos-arm64.zip`):
+- **macOS** (`slopon-macos-x64.zip` / `slopon-macos-arm64.zip`):
   `frontend/` contains the `slopon_dev.app` bundle. Pick the **arm64** zip on
   Apple Silicon Macs and the **x64** zip on Intel Macs.
 
