@@ -5,7 +5,7 @@
 
 [![SlopOn product introduction video](images/thumbnail6.png)](https://youtu.be/nW0YdV7NyII)
 
-## The story
+## SlopOn
 
 SlopOn is a desktop agentic coding environment. Here's how a project goes.
 
@@ -21,7 +21,7 @@ Long sessions don't rot either. When context usage crosses a threshold you set, 
 
 Under the hood it's two programs. A thin Flutter desktop client that renders and stays light on memory, and a backend that does the actual heavy lifting: LLM calls, git operations, tool execution. They talk over WebSocket. The backend can sit on your machine or on some other box entirely, the client doesn't care. Native builds for Windows, macOS, and Debian Linux.
 
-## Getting it
+## Quick one liner install
 
 The short version, one line, per-user, no admin:
 
@@ -39,7 +39,7 @@ powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
 
 When it's done, SlopOn shows up in your applications folder / Start Menu / app menu. Upgrading is the same command again with the app and backend closed. Your `~/.slopon` (config, database, attachments) stays put. ARM machines aren't supported yet, the installer tells you so instead of half-installing.
 
-### The by-hand route
+### Manual setup
 
 If you like knowing where every file came from, or the one-liner doesn't cover your machine:
 
