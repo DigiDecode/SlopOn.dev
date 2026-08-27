@@ -1,75 +1,76 @@
 > [!IMPORTANT]
-> This repository is currently a **placeholder** and does not host the project's
-> source code. The source code will be made available in this repository once it
-> reaches **10,000 stars** on GitHub.
+> This repo is a placeholder for now. The real source code lands here once the
+> project hits **10,000 stars**. The releases and installers below are the
+> actual product.
 
-[![SlopOn — product introduction video](images/thumbnail6.png)](https://youtu.be/nW0YdV7NyII)
+[![SlopOn product introduction video](images/thumbnail6.png)](https://youtu.be/nW0YdV7NyII)
 
 ## What is SlopOn?
 
-SlopOn is a desktop agentic coding environment for building software with AI/LLMs. You attach one or more repositories to a project, configure one or more AI agents ("bots"), and chat with them to plan, generate, edit, run, and review code — with engineering process wrapped around the model: tasks, a phase pipeline, git worktrees, prompts, tool permissions, and human approval for anything sensitive.
+A desktop agentic coding environment. You attach one or more repos to a project, set up bots (agents), and chat with them to plan, write, run, and review code. The point of the app is everything wrapped around the model: tasks, a phase pipeline, a git worktree per task, prompt templates, tool permissions, and a human approving anything sensitive before it happens.
 
-Architecturally, SlopOn is a lightweight Flutter desktop client connected over WebSocket to a separate backend that performs the LLM calls, git operations, and tool execution. The backend can run locally on your machine or on a remote machine — the client works the same either way.
+It's a thin Flutter client talking over WebSocket to a separate backend that does the LLM calls, git operations, and tool execution. The backend runs on your machine or on some other box entirely, the client doesn't care.
 
 ## Features
 
-- **Human-in-the-Loop** — tool calls that need consent surface as approval prompts, agents can ask interactive questions mid-task, and per-project Tool Permissions decide what is auto-approved and what requires your sign-off.
-- **Tasks & Phase Pipeline** — work is organized into tasks that move through an ordered pipeline of phases, each phase carrying a prompt-instruction template that generates a ready-to-run prompt.
-- **Worktree** (per task) — each task can run in its own git worktree on an isolated branch, with diff-against-main review, merge to main, and teardown when done.
-- **Context Compaction** — automatic or manual summarization of chat history when context usage crosses a configurable threshold, keeping long sessions coherent.
-- **Session Token Stats** — a live context-usage indicator showing used vs. total tokens, with an input/output/cache breakdown.
-- **Multiple repositories per project** — attach multiple Source Folders to a single project and work across them at once.
-- **Multiple Bots per project** — configure several agents with different models, system prompts, and toolsets; Sub-Agent Orchestration lets a bot delegate scoped sub-tasks, and the Advisor Tool queries other LLMs for a second opinion.
-- **No provider lock-in** — OpenAI-compatible and Anthropic API Providers with custom base URLs, including local, offline, and self-hosted models.
-- **MCP Server support** — connect per-project Model Context Protocol servers over SSE or HTTP and make their tools available to your bots.
-- **LSP Integration** — go-to-definition and find-references tools let agents navigate code semantically, the way an IDE does.
-- **Prompt management** — reusable prompts with templates and quick prompts, each runnable with a chosen bot.
-- **Remote backend support** — connect the desktop client to a backend running on another machine.
-- **Lightweight, low-memory UI** — the client renders and orchestrates while the backend does the heavy work.
-- **Native builds** for Windows, macOS, and Debian Linux.
+- Human in the loop: tool calls that need consent turn into approval prompts, bots can ask you questions mid-task, and per-project tool permissions decide what's auto-approved and what waits for your click.
+- Tasks and a phase pipeline. Each phase carries a prompt template, so the prompt for the next step comes out generated and ready to run (or edit first).
+- One git worktree per task: isolated branch, diff against main, merge when you're happy, tear it down when done.
+- Context compaction: chat history gets summarized (auto or manual) once usage crosses a threshold you set, so long sessions stay coherent instead of degrading into mush.
+- Token stats: live used vs total context, with input/output/cache breakdown.
+- Multiple source folders per project.
+- Multiple bots per project with different models, system prompts, and toolsets. Bots can delegate scoped sub-tasks to other bots, and there's an advisor tool for a second opinion from another LLM.
+- No provider lock-in: OpenAI-compatible and Anthropic providers, custom base URLs, local and self-hosted models included.
+- MCP servers over SSE or HTTP, per project, and their tools become available to your bots.
+- LSP integration: go-to-definition and find-references, so bots navigate code semantically like an IDE would.
+- Reusable and quick prompts, each runnable with the bot you pick.
+- Remote backend: point the client at a backend running somewhere else.
+- The client stays light on memory: it renders and orchestrates, the backend does the heavy lifting.
+- Native builds for Windows, macOS, and Debian Linux.
 
-## Installation & usage
+## Install
 
-One-liner install (per-user, no admin needed):
+One-liner, per-user, no admin:
 
-- **macOS** (Apple Silicon and Intel) and **Debian Linux** x64:
+macOS (Apple Silicon and Intel) and Debian Linux x64:
 
-  ```sh
-  curl -fsSL https://slopon.dev/install.sh | sh
-  ```
+```sh
+curl -fsSL https://slopon.dev/install.sh | sh
+```
 
-- **Windows** x64 (Windows PowerShell):
+Windows x64 (Windows PowerShell):
 
-  ```powershell
-  powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
-  ```
+```powershell
+powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
+```
 
-The installer detects your OS/architecture (Windows on ARM and Linux ARM are
-not supported yet — the scripts refuse with a clear message), downloads the
-latest release archive, verifies its SHA-256 against the GitHub release API,
-sets up a Node 22 runtime when the system Node is missing or an unverified
-major (20/22 are used as-is), installs the backend dependencies from the
-shipped lockfile (`npm ci`), and creates a platform launcher shortcut. After
-it finishes, launch **SlopOn** from your applications folder / Start Menu /
-app menu. Upgrades: re-run the same command with SlopOn stopped — `~/.slopon`
-(config, database, attachments) is preserved.
+Then launch SlopOn from your applications folder / Start Menu / app menu. To upgrade, close the app and the backend and run the same command again. Your `~/.slopon` (config, database, attachments) is left alone.
 
-Manual install (or machines without a terminal install): 1. Download the
-latest release for your platform (Windows x64, Linux x64, macOS x64, or
-macOS arm64) from the [releases page](https://github.com/DigiDecode/SlopOn.dev/releases).
-2. Extract the archive — it contains the desktop app under `frontend/`, the
-self-hosted backend under `backend/`, and the one-command launcher under
-`launcher/`.
-3. Follow the step-by-step instructions in [`docs/release-README.md`](docs/release-README.md):
-prerequisites, the launcher (`launcher/slopon.sh` / `launcher/slopon.cmd`),
-and the classic manual path (Node.js ≥ 20 and git).
+### Manual install
 
-On first start, the backend generates an API key — enter that key in the app to connect. Then create a project, attach your source folders, and configure an API provider and one or more bots to start working.
+Rather do it by hand? Same releases, more steps:
+
+1. Download the archive for your platform from the [releases page](https://github.com/DigiDecode/SlopOn.dev/releases): `slopon-windows-x64.zip`, `slopon-linux-x64.tar.gz`, or `slopon-macos-arm64.zip` / `slopon-macos-x64.zip` (arm64 for Apple Silicon, x64 for Intel).
+2. Extract it. You get three folders: `frontend/` (the desktop app), `backend/` (the Node.js server), and `launcher/` (the one-command start helper).
+3. Install the backend dependencies from the shipped lockfile:
+
+   ```sh
+   cd backend
+   npm ci
+   ```
+
+   You want Node.js 20 or 22 on your PATH (later majors aren't verified yet) and git. On Linux, `chmod +x frontend/slopon_dev` if the binary lost its exec bit during extraction.
+
+4. Start it with the launcher: `./launcher/slopon.sh` on macOS/Linux, `launcher\slopon.cmd` on Windows. It starts the backend, waits until it's actually listening, then opens the app. Running it twice doesn't spawn a second backend. `--stop` stops the backend again.
+
+On first start the backend generates an API key and prints it in a banner. The app reads the same `~/.slopon/config.json`, so with the launcher you never type the key. Starting the frontend by hand instead? Enter it when the app asks.
+
+More detail (logs under `~/.slopon/logs/`, the classic `node index.js` path, unsigned-build warnings) in [`docs/release-README.md`](docs/release-README.md).
 
 ## License
 
-SlopOn is free for individuals and for organizations whose aggregate gross revenue is below USD 100,000 over the trailing 12 months; a commercial license is required above that threshold. Code and other output generated from your own inputs is yours. See [LICENSING.md](license/LICENSING.md) for the plain-language summary and [LICENSE.md](license/LICENSE.md) for the full terms.
+Free for individuals and for organizations under USD 100,000 aggregate gross revenue (trailing 12 months). Above that you need a commercial license. Whatever the bots generate from your inputs is yours. Plain-language summary in [LICENSING.md](license/LICENSING.md), full terms in [LICENSE.md](license/LICENSE.md).
 
 ## Development workspace
 
-This repository still ships the `setup.sh` / `setup.bat` bootstrap scripts that clone and sync the project's development repositories — see [`docs/workspace-setup.md`](docs/workspace-setup.md).
+The `setup.sh` / `setup.bat` scripts in this repo clone and sync the project's dev repositories, if you're helping out. See [`docs/workspace-setup.md`](docs/workspace-setup.md).
