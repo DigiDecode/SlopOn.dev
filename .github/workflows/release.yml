@@ -324,12 +324,12 @@ jobs:
   verify-installers:
     name: verify-installers
     # Post-publish tripwire: a failure never unpublishes the release — the red
-    # run IS the signal. Staged (not live) at merge time: live mode would 404
-    # against the not-yet-deployed website and train the team to ignore the
-    # tripwire. Flip the mode input to 'live' only after the website deploy
-    # (rollout order: release → website deploy → live-mode flip).
+    # run IS the signal. Live mode: the real slopon.dev one-liners against the
+    # just-published release (deploy verified 2026-08-27, live run 33101959508
+    # green on all 6 legs). Staged mode remains available via direct dispatch
+    # of installer-verify.yml for pre-website testing.
     needs: publish
     uses: ./.github/workflows/installer-verify.yml
     with:
-      mode: 'staged'
+      mode: 'live'
     secrets: inherit
