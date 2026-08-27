@@ -124,6 +124,10 @@ jobs:
             Write-Host '::error::refusal message does not mention "unsupported"'
             exit 1
           }
+          # The runner's pwsh wrapper ends every step with `exit $LASTEXITCODE`;
+          # without this the expected non-zero child exit above would fail the
+          # step even though both assertions passed.
+          exit 0
 
       - name: Stage per-platform archive (staged mode, positive legs)
         if: matrix.expect == 'install' && env.MODE != 'live'
@@ -148,6 +152,17 @@ jobs:
           gh release download --repo DigiDecode/slopon_frontend --pattern "$frontend_asset" --dir downloads/frontend --clobber
           gh release download --repo DigiDecode/slopon_backend --pattern "slopon-backend-latest.zip" --dir downloads/backend --clobber
 
+          # On Windows runners these steps run under Git Bash, whose `tar` is
+          # GNU tar — it can neither read nor write zip archives. Windows ships
+          # bsdtar (libarchive) as System32\tar.exe, which does both; point at
+          # it by absolute path so PATH order (Git's bin first) cannot bite.
+          # All path arguments below are relative, so MSYS path mangling is not
+          # a concern for the native exe.
+          tar_bin=tar
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            tar_bin=/c/Windows/System32/tar.exe
+          fi
+
           name="slopon-$LEG"
           stage="stage/$name"
           mkdir -p "$stage/frontend"
@@ -157,8 +172,7 @@ jobs:
               if [ "$RUNNER_OS" = "macOS" ]; then
                 ditto -x -k "downloads/frontend/$frontend_asset" "$stage/frontend"
               else
-                # bsdtar (tar.exe) reads zips on Windows runners.
-                tar -xf "downloads/frontend/$frontend_asset" -C "$stage/frontend"
+                "$tar_bin" -xf "downloads/frontend/$frontend_asset" -C "$stage/frontend"
               fi
               ;;
           esac
@@ -167,7 +181,7 @@ jobs:
           elif [ "$RUNNER_OS" = "Linux" ]; then
             unzip -q downloads/backend/slopon-backend-latest.zip -d "$stage"
           else
-            tar -xf downloads/backend/slopon-backend-latest.zip -C "$stage"
+            "$tar_bin" -xf downloads/backend/slopon-backend-latest.zip -C "$stage"
           fi
           cp -r launcher "$stage/launcher"
           cp docs/release-README.md "$stage/README.md"
@@ -180,7 +194,7 @@ jobs:
                 ditto -c -k --keepParent "stage/$name" "out/$name.zip"
               else
                 # bsdtar picks the zip format from the extension.
-                tar -acf "out/$name.zip" -C stage "$name"
+                "$tar_bin" -acf "out/$name.zip" -C stage "$name"
               fi
               ;;
           esac
@@ -264,7 +278,9 @@ jobs:
           "$LAUNCHER"
           pid2=$(cat "$SLOPON_HOME/backend.pid")
           [ "$pid1" = "$pid2" ] || { echo "::error::second launcher run spawned a second backend ($pid1 -> $pid2)"; exit 1; }
-          backends=$(pgrep -fc 'backend/index\.js' || true)
+          # Portable count: BSD pgrep (macOS) has no -c flag — `pgrep -fc`
+          # exits with a usage error there and yields an empty string.
+          backends=$(pgrep -f 'backend/index\.js' | wc -l | tr -d '[:space:]')
           [ "$backends" = "1" ] || { echo "::error::expected exactly 1 backend process, found $backends"; exit 1; }
           echo '::endgroup::'
 
@@ -447,3 +463,7 @@ jobs:
           }
           if (Test-Path (Join-Path $SloponHome 'backend.pid')) { Write-Host '::error::pidfile not removed by --stop'; exit 1 }
           Write-Host '::endgroup::'
+          # Every real assertion above is explicit; end with a clean exit so a
+          # stale non-zero $LASTEXITCODE (from --stop's cmd wrapper, say)
+          # cannot fail an otherwise green step.
+          exit 0
