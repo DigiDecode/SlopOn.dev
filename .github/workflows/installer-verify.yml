@@ -230,6 +230,21 @@ jobs:
           # irm + iex through powershell.exe mirrors the documented command.
           powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex"
 
+      # The assertion steps below launch the REAL GUI, which is a release
+      # build with telemetry enabled — on a fresh runner it would send a
+      # genuine app_installed (+ heartbeats) to production GA. `?src=ci` only
+      # shields the script-download counter, not the app's POST /telemetry.
+      # Seed ~/.slopon/ga.json as opted-out (and opt-out already reported, so
+      # not even telemetry_opted_out fires). ~/.slopon survives the upgrade
+      # re-runs below by design, so one seed per leg is enough.
+      - name: Suppress app telemetry from CI (seed opted-out ga.json)
+        if: matrix.expect == 'install'
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.slopon"
+          printf '%s\n' '{"installationId":"ci-installer-verify","enabled":false,"installReported":false,"optOutReported":true}' > "$HOME/.slopon/ga.json"
+          cat "$HOME/.slopon/ga.json"
+
       # ── Positive-leg assertions ────────────────────────────────────────────
       - name: Assert install tree, shortcut, and backend flow (POSIX)
         if: matrix.expect == 'install' && runner.os != 'Windows'
