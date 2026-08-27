@@ -317,6 +317,18 @@ jobs:
           rm -f slopon_dev-sim
           echo '::endgroup::'
 
+          # The launcher genuinely starts the real GUI on macOS (headless
+          # Linux never gets that far) and the app stays open — --stop
+          # deliberately leaves the user's app alone. Close it here so the
+          # "everything stopped" state below is actually true.
+          if [ "${{ matrix.leg }}" != linux-x64 ]; then
+            pkill -f 'slopon_dev' 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              pgrep -f 'slopon_dev' >/dev/null 2>&1 || break
+              sleep 1
+            done
+          fi
+
           echo '::group::upgrade with everything stopped preserves ~/.slopon'
           apikey_before=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.apiKey')
           if [ "$MODE" = live ]; then
@@ -429,6 +441,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) { Write-Host '::error::installer re-run succeeded while the GUI was running'; exit 1 }
           Stop-Process -Id $gui.Id -Force -ErrorAction SilentlyContinue
           Remove-Item .\slopon_dev.exe -Force -ErrorAction SilentlyContinue
+          # The launcher genuinely starts the real GUI (several instances by
+          # now) and the app stays open — --stop deliberately leaves the
+          # user's app alone. Close them here so the "everything stopped"
+          # state below is actually true.
+          Get-Process slopon_dev -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
           Write-Host '::endgroup::'
 
           Write-Host '::group::upgrade with everything stopped preserves ~/.slopon'
@@ -456,9 +474,12 @@ jobs:
               Write-Host "::error::port $port still accepts connections after --stop"; exit 1
             }
           } finally { $tcp.Close() }
-          if (Get-Process node, slopon_dev -ErrorAction SilentlyContinue) {
-            Write-Host '::error::orphan node/slopon_dev processes survive --stop'
-            Get-Process node, slopon_dev -ErrorAction SilentlyContinue | Format-Table Id, ProcessName
+          # Only backend-side node processes are orphans — the GUI is the
+          # user's app and the launcher (correctly) started another instance
+          # in this very group.
+          if (Get-Process node -ErrorAction SilentlyContinue) {
+            Write-Host '::error::orphan node processes survive --stop'
+            Get-Process node -ErrorAction SilentlyContinue | Format-Table Id, ProcessName
             exit 1
           }
           if (Test-Path (Join-Path $SloponHome 'backend.pid')) { Write-Host '::error::pidfile not removed by --stop'; exit 1 }
