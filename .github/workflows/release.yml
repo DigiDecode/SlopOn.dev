@@ -147,6 +147,9 @@ jobs:
           else
             unzip -q "downloads/backend/slopon-backend-latest.zip" -d "$stage"
           fi
+          # Launcher payload: the shared launcher core + both wrappers ship in
+          # every archive (per-leg filtering would diverge for zero gain).
+          cp -r launcher "$stage/launcher"
           cp docs/release-README.md "$stage/README.md"
 
       - name: Package combined archive
@@ -204,6 +207,10 @@ jobs:
           require -f "$root/README.md"
           require -f "$root/backend/index.js"
           require -f "$root/backend/package.json"
+          require -f "$root/backend/package-lock.json"
+          require -f "$root/launcher/launcher.mjs"
+          require -f "$root/launcher/slopon.sh"
+          require -f "$root/launcher/slopon.cmd"
           case "$PLATFORM" in
             windows-x64)
               require -f "$root/frontend/slopon_dev.exe"
@@ -278,7 +285,7 @@ jobs:
               echo "| $platform | slopon-$platform.$ext | \`$sha\` |"
             done
             echo
-            echo "Each archive contains \`README.md\`, \`frontend/\` and \`backend/\`. The backend requires Node.js ≥ 20."
+            echo "Each archive contains \`README.md\`, \`frontend/\`, \`backend/\` and \`launcher/\`. The backend requires Node.js ≥ 20, or use the one-liner installer: https://slopon.dev/install.sh (macOS/Linux) / https://slopon.dev/install.ps1 (Windows)."
             echo
             echo "Artifacts are **unsigned**: expect a Gatekeeper warning (macOS) or SmartScreen warning (Windows) on first launch."
           } > notes.md
@@ -313,3 +320,16 @@ jobs:
               --notes-file notes.md \
               --latest
           fi
+
+  verify-installers:
+    name: verify-installers
+    # Post-publish tripwire: a failure never unpublishes the release — the red
+    # run IS the signal. Staged (not live) at merge time: live mode would 404
+    # against the not-yet-deployed website and train the team to ignore the
+    # tripwire. Flip the mode input to 'live' only after the website deploy
+    # (rollout order: release → website deploy → live-mode flip).
+    needs: publish
+    uses: ./.github/workflows/installer-verify.yml
+    with:
+      mode: 'staged'
+    secrets: inherit

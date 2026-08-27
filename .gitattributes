@@ -1,4 +1,13 @@
-# Normalize line endings so the bootstrap scripts work on every OS regardless of
-# each contributor's core.autocrlf setting (AC11).
+# Normalize line endings so the bootstrap scripts work on every OS regardless
+# of each contributor's core.autocrlf setting (AC11).
 setup.sh   text eol=lf
 setup.bat  text eol=crlf
+
+# Installer + launcher payload: shell scripts and the launcher core must stay
+# LF (a CRLF install.sh dies under dash; a CRLF slopon.sh/launcher.mjs dies
+# under sh/node with ELIFECYCLE errors), while cmd/PowerShell files are CRLF.
+install/install.sh    text eol=lf
+install/install.ps1   text eol=crlf
+launcher/launcher.mjs text eol=lf
+launcher/slopon.sh    text eol=lf
+launcher/slopon.cmd   text eol=crlf

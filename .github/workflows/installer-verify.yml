@@ -1,0 +1,449 @@
+name: installer-verify
+
+# End-to-end verification of install/install.sh + install/install.ps1 and the
+# launcher/ payload. Two modes:
+#   staged (default) — assemble the per-platform archive from the latest
+#     upstream releases exactly like the release workflow does, then run the
+#     installer with SLOPON_ARCHIVE pointing at the local file (local paths
+#     skip digest verification by design).
+#   live — run the real one-liner against https://slopon.dev (with ?src=ci so
+#     the download is not counted in GA) and the published `latest` release.
+#
+# Negative legs (windows-11-arm, ubuntu-24.04-arm) run the checked-out script
+# and assert the unsupported-arch gate exits non-zero BEFORE any download —
+# the Windows leg goes through powershell.exe (5.1), an x64-emulated process
+# on ARM64, exactly like the customer path.
+#
+# Note: executing first-party release binaries is a deliberate, documented
+# carve-out from the CI guideline Rule 7 (never execute downloaded artifacts),
+# mitigated by the SHA-256 digest verification inside the installer itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'staged = local SLOPON_ARCHIVE | live = the real slopon.dev one-liner'
+        type: choice
+        options: [staged, live]
+        default: staged
+  pull_request:
+    paths:
+      - 'install/**'
+      - 'launcher/**'
+      - '.github/workflows/installer-verify.yml'
+  workflow_call:
+    inputs:
+      mode:
+        description: 'staged = local SLOPON_ARCHIVE | live = the real slopon.dev one-liner'
+        type: string
+        default: staged
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout SlopOn.dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: dash lint install.sh (catches bashisms the piped one-liner would die on)
+        run: |
+          # /bin/sh is dash on ubuntu runners — the same shell Debian/Ubuntu
+          # customers get from `curl ... | sh`.
+          sh -n install/install.sh
+          sh -n launcher/slopon.sh
+
+      - name: Syntax-check the launcher core
+        run: node --check launcher/launcher.mjs
+
+  e2e:
+    name: e2e (${{ matrix.leg }})
+    needs: lint
+    strategy:
+      # Every leg is an independent signal — one red leg must not hide another.
+      fail-fast: false
+      matrix:
+        include:
+          - { leg: windows-x64,    os: windows-latest,  expect: install }
+          - { leg: linux-x64,      os: ubuntu-24.04,    expect: install }
+          - { leg: macos-x64,      os: macos-15-intel,  expect: install }
+          - { leg: macos-arm64,    os: macos-15,        expect: install }
+          # macos-15-intel is the last x86_64 image GitHub will offer
+          # (EOL ~Aug 2027); when it retires, the macos-x64 leg needs a rethink.
+          - { leg: windows-arm64,  os: windows-11-arm,  expect: unsupported }
+          - { leg: linux-arm64,    os: ubuntu-24.04-arm, expect: unsupported }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      MODE: ${{ inputs.mode || 'staged' }}
+    steps:
+      - name: Checkout SlopOn.dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ── Negative legs: the arch gate must exit non-zero before any download ──
+      - name: Assert unsupported-arch refusal (POSIX)
+        if: matrix.expect == 'unsupported' && runner.os == 'Linux'
+        run: |
+          set +e
+          sh install/install.sh > arch-gate.out 2>&1
+          code=$?
+          set -e
+          cat arch-gate.out || true
+          if [ "$code" -eq 0 ]; then
+            echo "::error::install.sh exited 0 on an unsupported arch — the gate is broken"
+            exit 1
+          fi
+          if ! grep -qi 'unsupported' arch-gate.out; then
+            echo "::error::refusal message does not mention 'unsupported'"
+            exit 1
+          fi
+
+      - name: Assert unsupported-arch refusal (Windows, via powershell.exe 5.1)
+        if: matrix.expect == 'unsupported' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # powershell.exe — the Windows PowerShell 5.1 binary — is itself an
+          # x64-emulated process on ARM64: this proves the gate reads the CPU
+          # architecture, not $env:PROCESSOR_ARCHITECTURE.
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> arch-gate.out
+          $code = $LASTEXITCODE
+          Get-Content arch-gate.out
+          if ($code -eq 0) {
+            Write-Host '::error::install.ps1 exited 0 on an unsupported arch — the gate is broken'
+            exit 1
+          }
+          if (-not (Select-String -Path arch-gate.out -Pattern 'unsupported' -Quiet)) {
+            Write-Host '::error::refusal message does not mention "unsupported"'
+            exit 1
+          }
+
+      - name: Stage per-platform archive (staged mode, positive legs)
+        if: matrix.expect == 'install' && env.MODE != 'live'
+        env:
+          GH_TOKEN: ${{ secrets.SLOPON_CI_CHECKOUT_TOKEN }}
+          LEG: ${{ matrix.leg }}
+        shell: bash
+        run: |
+          # Keep this assembly in sync with the release workflow's
+          # "Assemble combined folder" + "Package combined archive" steps —
+          # the installer under test must consume the exact shipped layout.
+          set -e
+          case "$LEG" in
+            windows-x64) frontend_asset=slopon_dev-latest-windows-x64.zip; ext=zip ;;
+            linux-x64)   frontend_asset=slopon_dev-latest-linux-x64.tar.gz; ext=tar.gz ;;
+            macos-x64)   frontend_asset=slopon_dev-latest-macos-x64.zip;    ext=zip ;;
+            macos-arm64) frontend_asset=slopon_dev-latest-macos-arm64.zip;  ext=zip ;;
+            *) echo "::error::unknown leg $LEG"; exit 1 ;;
+          esac
+          mkdir -p downloads/frontend downloads/backend
+          gh release view --repo DigiDecode/slopon_frontend --json tagName --jq '.tagName' >/dev/null
+          gh release download --repo DigiDecode/slopon_frontend --pattern "$frontend_asset" --dir downloads/frontend --clobber
+          gh release download --repo DigiDecode/slopon_backend --pattern "slopon-backend-latest.zip" --dir downloads/backend --clobber
+
+          name="slopon-$LEG"
+          stage="stage/$name"
+          mkdir -p "$stage/frontend"
+          case "$frontend_asset" in
+            *.tar.gz) tar -xzf "downloads/frontend/$frontend_asset" -C "$stage/frontend" ;;
+            *.zip)
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                ditto -x -k "downloads/frontend/$frontend_asset" "$stage/frontend"
+              else
+                # bsdtar (tar.exe) reads zips on Windows runners.
+                tar -xf "downloads/frontend/$frontend_asset" -C "$stage/frontend"
+              fi
+              ;;
+          esac
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -x -k downloads/backend/slopon-backend-latest.zip "$stage"
+          elif [ "$RUNNER_OS" = "Linux" ]; then
+            unzip -q downloads/backend/slopon-backend-latest.zip -d "$stage"
+          else
+            tar -xf downloads/backend/slopon-backend-latest.zip -C "$stage"
+          fi
+          cp -r launcher "$stage/launcher"
+          cp docs/release-README.md "$stage/README.md"
+
+          mkdir -p out
+          case "$ext" in
+            tar.gz) tar -czf "out/$name.tar.gz" -C stage "$name" ;;
+            zip)
+              if [ "$RUNNER_OS" = "macOS" ]; then
+                ditto -c -k --keepParent "stage/$name" "out/$name.zip"
+              else
+                # bsdtar picks the zip format from the extension.
+                tar -acf "out/$name.zip" -C stage "$name"
+              fi
+              ;;
+          esac
+          ls -l out/
+
+      - name: Run installer (staged, POSIX)
+        if: matrix.expect == 'install' && env.MODE != 'live' && runner.os != 'Windows'
+        env:
+          LEG: ${{ matrix.leg }}
+        run: |
+          ext=tar.gz; [ "$LEG" = "linux-x64" ] || ext=zip
+          export SLOPON_ARCHIVE="$PWD/out/slopon-$LEG.$ext"
+          sh install/install.sh
+
+      - name: Run installer (staged, Windows via powershell.exe 5.1)
+        if: matrix.expect == 'install' && env.MODE != 'live' && runner.os == 'Windows'
+        env:
+          SLOPON_ARCHIVE: ${{ github.workspace }}\out\slopon-windows-x64.zip
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1
+
+      - name: Run installer (live, POSIX one-liner)
+        if: matrix.expect == 'install' && env.MODE == 'live' && runner.os != 'Windows'
+        run: |
+          # ?src=ci: served but not counted as a GA download.
+          curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh
+
+      - name: Run installer (live, Windows one-liner)
+        if: matrix.expect == 'install' && env.MODE == 'live' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # irm + iex through powershell.exe mirrors the documented command.
+          powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex"
+
+      # ── Positive-leg assertions ────────────────────────────────────────────
+      - name: Assert install tree, shortcut, and backend flow (POSIX)
+        if: matrix.expect == 'install' && runner.os != 'Windows'
+        run: |
+          set -e
+          case "${{ matrix.leg }}" in
+            macos-*) INSTALL="$HOME/Applications/SlopOn" ;;
+            linux-*) INSTALL="$HOME/.local/opt/slopon" ;;
+          esac
+          LAUNCHER="$INSTALL/launcher/slopon.sh"
+          SLOPON_HOME="$HOME/.slopon"
+
+          echo '::group::install tree'
+          [ -f "$INSTALL/backend/package-lock.json" ] || { echo '::error::backend/package-lock.json missing'; exit 1; }
+          [ -f "$INSTALL/launcher/launcher.mjs" ]     || { echo '::error::launcher/launcher.mjs missing'; exit 1; }
+          [ -x "$INSTALL/launcher/slopon.sh" ]        || { echo '::error::launcher/slopon.sh not executable'; exit 1; }
+          [ -d "$INSTALL/backend/node_modules" ]      || { echo '::error::node_modules missing (npm ci did not run)'; exit 1; }
+          if [ "${{ matrix.leg }}" = linux-x64 ]; then
+            [ -x "$INSTALL/frontend/slopon_dev" ] || { echo '::error::frontend/slopon_dev not executable'; exit 1; }
+            [ -f "$HOME/.local/share/applications/slopon.desktop" ] || { echo '::error::.desktop shortcut missing'; exit 1; }
+          else
+            [ -f "$HOME/Applications/SlopOn.app/Contents/MacOS/SlopOn" ] || { echo '::error::SlopOn.app launcher missing'; exit 1; }
+          fi
+          echo '::endgroup::'
+
+          echo '::group::launcher: backend first, then GUI'
+          "$LAUNCHER"
+          port=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.port')
+          for i in $(seq 1 60); do
+            if node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port"; then break; fi
+            sleep 1
+          done
+          pid1=$(cat "$SLOPON_HOME/backend.pid")
+          [ -n "$pid1" ] || { echo '::error::pidfile missing after launch'; exit 1; }
+          echo "backend pid $pid1 on port $port"
+          if [ "${{ matrix.leg }}" != linux-x64 ]; then
+            # GUI liveness (headless Linux runners cannot run the GUI).
+            sleep 10
+            if ! pgrep -f 'slopon_dev' >/dev/null 2>&1; then
+              echo '::warning::GUI process not detected after 10 s (macOS runner quirk?)'
+            fi
+          fi
+          echo '::endgroup::'
+
+          echo '::group::double-launch guard'
+          "$LAUNCHER"
+          pid2=$(cat "$SLOPON_HOME/backend.pid")
+          [ "$pid1" = "$pid2" ] || { echo "::error::second launcher run spawned a second backend ($pid1 -> $pid2)"; exit 1; }
+          backends=$(pgrep -fc 'backend/index\.js' || true)
+          [ "$backends" = "1" ] || { echo "::error::expected exactly 1 backend process, found $backends"; exit 1; }
+          echo '::endgroup::'
+
+          echo '::group::upgrade refusal while the backend runs'
+          if [ "$MODE" = live ]; then
+            if curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh; then
+              echo '::error::installer re-run succeeded while the backend was running'; exit 1
+            fi
+          else
+            ext=tar.gz; [ "${{ matrix.leg }}" = linux-x64 ] || ext=zip
+            if SLOPON_ARCHIVE="$PWD/out/slopon-${{ matrix.leg }}.$ext" sh install/install.sh; then
+              echo '::error::installer re-run succeeded while the backend was running'; exit 1
+            fi
+          fi
+          echo '::endgroup::'
+
+          echo '::group::upgrade refusal while only the GUI runs'
+          "$LAUNCHER" --stop
+          # Stand in for the GUI: a live process whose command line contains
+          # slopon_dev (what pgrep -f / Get-Process match on).
+          cp /bin/sleep slopon_dev-sim
+          ./slopon_dev-sim 300 &
+          sim_pid=$!
+          if [ "$MODE" = live ]; then
+            if curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh; then
+              echo '::error::installer re-run succeeded while the GUI was running'; exit 1
+            fi
+          else
+            if SLOPON_ARCHIVE="$PWD/out/slopon-${{ matrix.leg }}.$ext" sh install/install.sh; then
+              echo '::error::installer re-run succeeded while the GUI was running'; exit 1
+            fi
+          fi
+          kill "$sim_pid" 2>/dev/null || true
+          rm -f slopon_dev-sim
+          echo '::endgroup::'
+
+          echo '::group::upgrade with everything stopped preserves ~/.slopon'
+          apikey_before=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.apiKey')
+          if [ "$MODE" = live ]; then
+            curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh
+          else
+            SLOPON_ARCHIVE="$PWD/out/slopon-${{ matrix.leg }}.$ext" sh install/install.sh
+          fi
+          apikey_after=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.apiKey')
+          [ "$apikey_before" = "$apikey_after" ] || { echo '::error::~/.slopon config changed across the upgrade'; exit 1; }
+          echo '::endgroup::'
+
+          echo '::group::stop frees the port and leaves no orphans'
+          "$LAUNCHER"
+          port=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.port')
+          "$LAUNCHER" --stop
+          sleep 10
+          if node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port"; then
+            echo "::error::port $port still accepts connections after --stop"; exit 1
+          fi
+          if pgrep -f 'backend/index\.js|runner\.js' >/dev/null 2>&1; then
+            echo '::error::orphan backend/runner processes survive --stop'
+            pgrep -af 'backend/index\.js|runner\.js' || true
+            exit 1
+          fi
+          [ ! -f "$SLOPON_HOME/backend.pid" ] || { echo '::error::pidfile not removed by --stop'; exit 1; }
+          echo '::endgroup::'
+
+      - name: Assert install tree, shortcut, and backend flow (Windows)
+        if: matrix.expect == 'install' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Install = Join-Path $env:LOCALAPPDATA 'Programs\SlopOn'
+          $SloponHome = Join-Path $env:USERPROFILE '.slopon'
+          $Launcher = Join-Path $Install 'launcher\slopon.cmd'
+
+          Write-Host '::group::install tree'
+          foreach ($Rel in 'backend\package-lock.json', 'launcher\launcher.mjs', 'launcher\slopon.cmd', 'backend\node_modules') {
+            if (-not (Test-Path (Join-Path $Install $Rel))) { Write-Host "::error::$Rel missing"; exit 1 }
+          }
+          $Lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\SlopOn.lnk'
+          if (-not (Test-Path $Lnk)) { Write-Host '::error::Start Menu shortcut missing'; exit 1 }
+          Write-Host '::endgroup::'
+
+          function Wait-BackendPort([int]$TimeoutSec) {
+            $deadline = (Get-Date).AddSeconds($TimeoutSec)
+              while ((Get-Date) -lt $deadline) {
+                $cfg = Get-Content (Join-Path $SloponHome 'config.json') -Raw -ErrorAction SilentlyContinue
+                if ($cfg) {
+                  $port = (ConvertFrom-Json $cfg).server.port
+                  if ($port) {
+                    $tcp = New-Object Net.Sockets.TcpClient
+                    try {
+                      $c = $tcp.BeginConnect('127.0.0.1', [int]$port, $null, $null)
+                      if ($c.AsyncWaitHandle.WaitOne(1500) -and $tcp.Connected) { return $port }
+                    } finally { $tcp.Close() }
+                  }
+                }
+                Start-Sleep -Seconds 1
+              }
+            return 0
+          }
+
+          Write-Host '::group::launcher: backend first, then GUI'
+          & $Launcher
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::launcher exited non-zero'; exit 1 }
+          $port = Wait-BackendPort 60
+          if ($port -eq 0) { Write-Host '::error::backend never became ready'; exit 1 }
+          $pid1 = [int](Get-Content (Join-Path $SloponHome 'backend.pid') | Select-Object -First 1)
+          Write-Host "backend pid $pid1 on port $port"
+          Start-Sleep -Seconds 10
+          if (-not (Get-Process slopon_dev -ErrorAction SilentlyContinue)) {
+            Write-Host '::warning::GUI process not detected after 10 s'
+          }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::double-launch guard'
+          & $Launcher
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::second launcher run failed'; exit 1 }
+          $pid2 = [int](Get-Content (Join-Path $SloponHome 'backend.pid') | Select-Object -First 1)
+          if ($pid1 -ne $pid2) { Write-Host "::error::second launcher run spawned a second backend ($pid1 -> $pid2)"; exit 1 }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::upgrade refusal while the backend runs'
+          & $Launcher --stop
+          # (backend now down; restart it for this assertion)
+          & $Launcher
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::launcher restart failed'; exit 1 }
+          $null = Wait-BackendPort 60
+          if ($env:MODE -eq 'live') {
+            powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun.out
+          } else {
+            $env:SLOPON_ARCHIVE = Join-Path $env:GITHUB_WORKSPACE 'out\slopon-windows-x64.zip'
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun.out
+          }
+          if ($LASTEXITCODE -eq 0) { Write-Host '::error::installer re-run succeeded while the backend was running'; exit 1 }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::upgrade refusal while only the GUI runs'
+          & $Launcher --stop
+          # Stand in for the GUI: a live process whose image name is
+          # slopon_dev.exe (what Get-Process matches on).
+          Copy-Item C:\Windows\System32\cmd.exe .\slopon_dev.exe -Force
+          $gui = Start-Process -FilePath .\slopon_dev.exe -ArgumentList '/c', 'ping -n 300 127.0.0.1' -PassThru -WindowStyle Hidden
+          if ($env:MODE -eq 'live') {
+            powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun2.out
+          } else {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun2.out
+          }
+          if ($LASTEXITCODE -eq 0) { Write-Host '::error::installer re-run succeeded while the GUI was running'; exit 1 }
+          Stop-Process -Id $gui.Id -Force -ErrorAction SilentlyContinue
+          Remove-Item .\slopon_dev.exe -Force -ErrorAction SilentlyContinue
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::upgrade with everything stopped preserves ~/.slopon'
+          $before = (Get-Content (Join-Path $SloponHome 'config.json') -Raw | ConvertFrom-Json).server.apiKey
+          if ($env:MODE -eq 'live') {
+            powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun3.out
+          } else {
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun3.out
+          }
+          if ($LASTEXITCODE -ne 0) { Get-Content rerun3.out; Write-Host '::error::all-stopped upgrade failed'; exit 1 }
+          $after = (Get-Content (Join-Path $SloponHome 'config.json') -Raw | ConvertFrom-Json).server.apiKey
+          if ($before -ne $after) { Write-Host '::error::~/.slopon config changed across the upgrade'; exit 1 }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::stop frees the port and leaves no orphans'
+          & $Launcher
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::launcher restart failed'; exit 1 }
+          $port = Wait-BackendPort 60
+          & $Launcher --stop
+          Start-Sleep -Seconds 10
+          $tcp = New-Object Net.Sockets.TcpClient
+          try {
+            $c = $tcp.BeginConnect('127.0.0.1', [int]$port, $null, $null)
+            if ($c.AsyncWaitHandle.WaitOne(1500) -and $tcp.Connected) {
+              Write-Host "::error::port $port still accepts connections after --stop"; exit 1
+            }
+          } finally { $tcp.Close() }
+          if (Get-Process node, slopon_dev -ErrorAction SilentlyContinue) {
+            Write-Host '::error::orphan node/slopon_dev processes survive --stop'
+            Get-Process node, slopon_dev -ErrorAction SilentlyContinue | Format-Table Id, ProcessName
+            exit 1
+          }
+          if (Test-Path (Join-Path $SloponHome 'backend.pid')) { Write-Host '::error::pidfile not removed by --stop'; exit 1 }
+          Write-Host '::endgroup::'

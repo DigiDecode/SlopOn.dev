@@ -30,9 +30,39 @@ Architecturally, SlopOn is a lightweight Flutter desktop client connected over W
 
 ## Installation & usage
 
-1. Download the latest release for your platform (Windows x64, Linux x64, macOS x64, or macOS arm64) from the [releases page](https://github.com/DigiDecode/SlopOn.dev/releases).
-2. Extract the archive — it contains the desktop app under `frontend/` and the self-hosted backend under `backend/`.
-3. Follow the step-by-step installation instructions in [`docs/release-README.md`](docs/release-README.md): prerequisites (Node.js ≥ 20 and git), running the backend, and launching the app.
+One-liner install (per-user, no admin needed):
+
+- **macOS** (Apple Silicon and Intel) and **Debian Linux** x64:
+
+  ```sh
+  curl -fsSL https://slopon.dev/install.sh | sh
+  ```
+
+- **Windows** x64 (Windows PowerShell):
+
+  ```powershell
+  powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
+  ```
+
+The installer detects your OS/architecture (Windows on ARM and Linux ARM are
+not supported yet — the scripts refuse with a clear message), downloads the
+latest release archive, verifies its SHA-256 against the GitHub release API,
+sets up a Node 22 runtime when the system Node is missing or an unverified
+major (20/22 are used as-is), installs the backend dependencies from the
+shipped lockfile (`npm ci`), and creates a platform launcher shortcut. After
+it finishes, launch **SlopOn** from your applications folder / Start Menu /
+app menu. Upgrades: re-run the same command with SlopOn stopped — `~/.slopon`
+(config, database, attachments) is preserved.
+
+Manual install (or machines without a terminal install): 1. Download the
+latest release for your platform (Windows x64, Linux x64, macOS x64, or
+macOS arm64) from the [releases page](https://github.com/DigiDecode/SlopOn.dev/releases).
+2. Extract the archive — it contains the desktop app under `frontend/`, the
+self-hosted backend under `backend/`, and the one-command launcher under
+`launcher/`.
+3. Follow the step-by-step instructions in [`docs/release-README.md`](docs/release-README.md):
+prerequisites, the launcher (`launcher/slopon.sh` / `launcher/slopon.cmd`),
+and the classic manual path (Node.js ≥ 20 and git).
 
 On first start, the backend generates an API key — enter that key in the app to connect. Then create a project, attach your source folders, and configure an API provider and one or more bots to start working.
 
