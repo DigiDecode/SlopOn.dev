@@ -5,7 +5,8 @@
 # Downloads the latest release archive, verifies its SHA-256 against the
 # GitHub release API asset digest, provisions a pinned Node 22 runtime under
 # the install root when the system Node is missing or an unverified major,
-# runs `npm ci` in backend\, and creates a Start Menu shortcut. Per-user
+# runs `npm ci` in backend\, creates a Start Menu shortcut, and puts the
+# launcher dir on the user PATH so `slopon` works from any terminal. Per-user
 # install: %LOCALAPPDATA%\Programs\SlopOn, no admin. ~/.slopon (config,
 # database, attachments) is never touched.
 #
@@ -286,12 +287,51 @@ $Shortcut.IconLocation = Join-Path $InstallRoot 'frontend\slopon_dev.exe'
 $Shortcut.Description = 'SlopOn - agentic coding environment'
 $Shortcut.Save()
 
+# ── 8b. `slopon` command on the user PATH ──────────────────────────────
+# Adds <install>\launcher to the USER Path (HKCU, no admin), so typing
+# `slopon` (slopon.cmd; .CMD is in PATHEXT) works from any terminal. The RAW
+# registry value is read/written (DoNotExpandEnvironmentNames) so %VAR%
+# entries other installers left in the user PATH survive un-expanded.
+$LauncherDir = Join-Path $InstallRoot 'launcher'
+Write-Host "==> adding $LauncherDir to the user PATH (slopon command)"
+try {
+    $EnvKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    $RawPath = [string]$EnvKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $OnPath = $false
+    foreach ($Entry in ($RawPath -split ';')) {
+        if ($Entry -and ($Entry.Trim() -ieq $LauncherDir)) { $OnPath = $true; break }
+    }
+    if (-not $OnPath) {
+        $NewPath = if ($RawPath.Trim()) { "$RawPath;$LauncherDir" } else { $LauncherDir }
+        # ExpandString keeps any existing %USERPROFILE%\... entries functional.
+        $EnvKey.SetValue('Path', $NewPath, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    }
+    $EnvKey.Close()
+} catch {
+    Warn "could not update the user PATH ($($_.Exception.Message)) - start via the Start Menu shortcut instead."
+}
+# The registry only affects processes started later; make `slopon` work in
+# THIS window right away (matters for the `irm | iex` one-liner flow).
+$env:Path = "$LauncherDir;$env:Path"
+# Broadcast WM_SETTINGCHANGE so Explorer (and terminals launched from it)
+# pick up the new PATH without a logoff. Best-effort.
+try {
+    Add-Type -Namespace SlopOnInstaller -Name NativeMethods -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    $Result = [UIntPtr]::Zero
+    [void][SlopOnInstaller.NativeMethods]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$Result)
+} catch {
+}
+
 # ── 9. Summary ─────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host 'SlopOn installed successfully.'
 Write-Host "  Install root : $InstallRoot"
-Write-Host '  Start        : SlopOn (Start Menu), or:'
-Write-Host "                 $(Join-Path $InstallRoot 'launcher\slopon.cmd')"
+Write-Host '  Start        : type `slopon` in a NEW terminal (this one already has it),'
+Write-Host '                 or SlopOn (Start Menu)'
+Write-Host "                 direct: $(Join-Path $InstallRoot 'launcher\slopon.cmd')"
 Write-Host "  Stop backend : `"$(Join-Path $InstallRoot 'launcher\slopon.cmd')`" --stop  (best-effort hard kill)"
 Write-Host "  Logs         : $(Join-Path $SloponHome 'logs\backend.log') and launcher.log"
 if ($NodeKind -ne 'system') {

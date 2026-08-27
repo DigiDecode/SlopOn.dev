@@ -356,6 +356,46 @@ jobs:
           [ ! -f "$SLOPON_HOME/backend.pid" ] || { echo '::error::pidfile not removed by --stop'; exit 1; }
           echo '::endgroup::'
 
+          echo '::group::slopon command on PATH (shim + startup files)'
+          [ -x "$HOME/.local/bin/slopon" ] || { echo '::error::~/.local/bin/slopon shim missing'; exit 1; }
+          case "${{ matrix.leg }}" in
+            linux-x64)
+              grep -q 'SlopOn installer' "$HOME/.profile" || { echo '::error::~/.profile PATH block missing'; exit 1; }
+              # A real login shell must resolve the command via .profile.
+              sh -l -c 'command -v slopon' || { echo '::error::login sh does not resolve slopon'; exit 1; }
+              ;;
+            *)
+              grep -q 'SlopOn installer' "$HOME/.zprofile" || { echo '::error::~/.zprofile PATH block missing'; exit 1; }
+              grep -q 'SlopOn installer' "$HOME/.zshrc" || { echo '::error::~/.zshrc PATH block missing'; exit 1; }
+              # A real login zsh must resolve the command via .zprofile.
+              zsh -l -c 'command -v slopon' || { echo '::error::login zsh does not resolve slopon'; exit 1; }
+              ;;
+          esac
+          # The shim must start (and stop) the real thing from an unrelated cwd.
+          ( cd / && PATH="$HOME/.local/bin:$PATH" slopon )
+          pid_shim=$(cat "$SLOPON_HOME/backend.pid" 2>/dev/null || true)
+          [ -n "$pid_shim" ] || { echo '::error::shim run left no pidfile'; exit 1; }
+          port=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.port')
+          for i in $(seq 1 60); do
+            if node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port"; then break; fi
+            sleep 1
+          done
+          PATH="$HOME/.local/bin:$PATH" slopon --stop
+          for i in $(seq 1 15); do
+            if ! node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          if node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port" 2>/dev/null; then
+            echo "::error::port $port still accepts connections after slopon --stop"; exit 1
+          fi
+          [ ! -f "$SLOPON_HOME/backend.pid" ] || { echo '::error::pidfile not removed by slopon --stop'; exit 1; }
+          # The shim run relaunched the real GUI on macOS — close it again so
+          # the runner ends clean.
+          if [ "${{ matrix.leg }}" != linux-x64 ]; then
+            pkill -f 'slopon_dev' 2>/dev/null || true
+          fi
+          echo '::endgroup::'
+
       - name: Assert install tree, shortcut, and backend flow (Windows)
         if: matrix.expect == 'install' && runner.os == 'Windows'
         shell: pwsh
@@ -483,7 +523,36 @@ jobs:
             exit 1
           }
           if (Test-Path (Join-Path $SloponHome 'backend.pid')) { Write-Host '::error::pidfile not removed by --stop'; exit 1 }
+
+          Write-Host '::group::slopon command on user PATH'
+          $LauncherDir = Join-Path $Install 'launcher'
+          $EnvKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          $RawUserPath = [string]$EnvKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $EnvKey.Close()
+          if (($RawUserPath -split ';') -notcontains $LauncherDir) {
+              Write-Host "::error::launcher dir not on the user PATH (raw: $RawUserPath)"; exit 1
+          }
+          # A fresh terminal resolves `slopon` once PATH includes the launcher
+          # dir — simulate that and exercise the command end to end.
+          $env:Path = "$LauncherDir;$env:Path"
+          if (-not (Get-Command slopon -ErrorAction SilentlyContinue)) { Write-Host '::error::slopon does not resolve on PATH'; exit 1 }
+          & slopon
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::slopon run exited non-zero'; exit 1 }
+          $port = Wait-BackendPort 60
+          if ($port -eq 0) { Write-Host '::error::backend never became ready via slopon'; exit 1 }
+          & slopon --stop
+          Start-Sleep -Seconds 10
+          $tcp = New-Object Net.Sockets.TcpClient
+          try {
+              $c = $tcp.BeginConnect('127.0.0.1', [int]$port, $null, $null)
+              if ($c.AsyncWaitHandle.WaitOne(1500) -and $tcp.Connected) {
+                  Write-Host "::error::port $port still accepts connections after slopon --stop"; exit 1
+              }
+          } finally { $tcp.Close() }
+          if (Test-Path (Join-Path $SloponHome 'backend.pid')) { Write-Host '::error::pidfile not removed by slopon --stop'; exit 1 }
+          Get-Process slopon_dev -ErrorAction SilentlyContinue | Stop-Process -Force
           Write-Host '::endgroup::'
+
           # Every real assertion above is explicit; end with a clean exit so a
           # stale non-zero $LASTEXITCODE (from --stop's cmd wrapper, say)
           # cannot fail an otherwise green step.

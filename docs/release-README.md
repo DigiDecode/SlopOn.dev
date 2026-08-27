@@ -62,6 +62,12 @@ yet — the installer refuses with a clear message. Upgrading = re-run the
 one-liner with SlopOn stopped (backend **and** app); `~/.slopon` (config,
 database, attachments) is preserved untouched.
 
+The installer also puts a `slopon` command on your PATH: open a **new**
+terminal and `slopon` starts the backend and the app, `slopon --stop` stops
+the backend. (macOS/Linux: a shim in `~/.local/bin` plus a PATH line in your
+shell startup files; Windows: the launcher dir goes on the user PATH.)
+Manual-extract archives don't create it — use the launcher paths below.
+
 ## 1. Run the backend (and the app)
 
 The recommended start is the launcher — it starts the backend only if it is
@@ -70,11 +76,11 @@ launches the app (the app reads the same `~/.slopon/config.json` and connects
 automatically — no key typing on a fresh install):
 
 ```sh
-# macOS / Linux
+# macOS / Linux (or just `slopon` anywhere, if you installed via the one-liner)
 ./launcher/slopon.sh           # start (backend first, then the app)
 ./launcher/slopon.sh --stop    # stop the backend
 
-# Windows
+# Windows (or just `slopon` anywhere, if you installed via the one-liner)
 launcher\slopon.cmd            # start
 launcher\slopon.cmd --stop     # stop (best-effort hard kill)
 ```

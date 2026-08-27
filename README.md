@@ -37,7 +37,7 @@ Windows x64 (Windows PowerShell):
 powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
 ```
 
-When it's done, SlopOn shows up in your applications folder / Start Menu / app menu. Upgrading is the same command again with the app and backend closed. Your `~/.slopon` (config, database, attachments) stays put. ARM machines aren't supported yet, the installer tells you so instead of half-installing.
+When it's done, SlopOn shows up in your applications folder / Start Menu / app menu, and a `slopon` command lands on your PATH: open a new terminal, type `slopon`, backend and app come up. `slopon --stop` stops the backend again. Upgrading is the same command again with the app and backend closed. Your `~/.slopon` (config, database, attachments) stays put. ARM machines aren't supported yet, the installer tells you so instead of half-installing.
 
 ### Manual setup
 
