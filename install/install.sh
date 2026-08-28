@@ -16,6 +16,9 @@
 #                             local paths) or an explicit URL (checksum verified)
 #   SLOPON_GH_TOKEN=tok       GitHub API token (avoids anonymous rate limits)
 #   SLOPON_SKIP_CHECKSUM=1    skip release-archive digest verification (CI only)
+#
+# The release archive is cached in ~/.slopon/cache and reused across runs when
+# its SHA-256 matches the GitHub release API digest (skips the ~20 MB download).
 set -u
 
 REPO="DigiDecode/SlopOn.dev"
@@ -90,24 +93,9 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 archive_src="${SLOPON_ARCHIVE:-$DEFAULT_DL_BASE/$asset}"
 case "$archive_src" in
-  http://*|https://*) verify_digest=yes; need_download=yes ;;
-  *)                 verify_digest=no;  need_download=no ;;  # local file path (CI seam)
+  http://*|https://*) need_download=yes ;;
+  *)                 need_download=no ;;  # local file path (CI seam)
 esac
-
-if [ "$need_download" = yes ]; then
-  echo "==> downloading $asset"
-  curl -fSL --retry 3 -o "$tmp/$asset" "$archive_src" || fail "download failed: $archive_src"
-  archive="$tmp/$asset"
-else
-  archive="$archive_src"
-  [ -f "$archive" ] || fail "SLOPON_ARCHIVE file not found: $archive"
-  echo "==> using local archive $archive (digest verification skipped by design for local files)"
-fi
-
-if [ "${SLOPON_SKIP_CHECKSUM:-0}" = "1" ]; then
-  warn "SLOPON_SKIP_CHECKSUM=1 — skipping archive digest verification (CI-only escape hatch)"
-  verify_digest=no
-fi
 
 compute_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -119,8 +107,27 @@ compute_sha256() {
   fi
 }
 
-if [ "$verify_digest" = yes ]; then
-  echo "==> verifying SHA-256 against the GitHub release API"
+archive=""
+expected=""
+if [ "$need_download" = no ]; then
+  archive="$archive_src"
+  [ -f "$archive" ] || fail "SLOPON_ARCHIVE file not found: $archive"
+  echo "==> using local archive $archive (digest verification skipped by design for local files)"
+elif [ "${SLOPON_SKIP_CHECKSUM:-0}" = "1" ]; then
+  warn "SLOPON_SKIP_CHECKSUM=1 — skipping archive digest verification (CI-only escape hatch)"
+  echo "==> downloading $asset"
+  archive="$tmp/$asset"
+  curl -fSL --retry 3 -o "$archive" "$archive_src" || fail "download failed: $archive_src"
+else
+  # The release archive is cached under $SLOPON_HOME/cache so repeat installs
+  # (upgrades) skip the ~20 MB CDN download. The GitHub API digest is fetched
+  # FIRST — it is the reuse anchor for the cache and the verification anchor
+  # for a fresh download; integrity is never skipped, only satisfied early.
+  cache_dir="$SLOPON_HOME/cache"
+  cache_file="$cache_dir/$asset"
+  digest_file="$cache_file.sha256"
+  mkdir -p "$cache_dir" || fail "cannot create $cache_dir"
+  echo "==> resolving the release digest from the GitHub API"
   api_json="$tmp/release-api.json"
   if [ -n "${SLOPON_GH_TOKEN:-}" ]; then
     api_code=$(curl -sS -o "$api_json" -w '%{http_code}' \
@@ -130,24 +137,55 @@ if [ "$verify_digest" = yes ]; then
     api_code=$(curl -sS -o "$api_json" -w '%{http_code}' \
       -H "Accept: application/vnd.github+json" "$GH_API_URL")
   fi
-  case "$api_code" in
-    200) ;;
-    403|429)
-      fail "GitHub API rate limit reached (HTTP $api_code) — retry in a while, or set SLOPON_GH_TOKEN to a token and re-run."
-      ;;
-    *) fail "GitHub release API returned HTTP $api_code — cannot verify the archive digest." ;;
-  esac
-  expected=$(awk -v a="$asset" '
-    /"name":/ { inasset = (index($0, "\"" a "\"") > 0) }
-    inasset && /"digest":/ { sub(/.*"digest": *"/, ""); sub(/".*/, ""); print; exit }
-  ' "$api_json")
-  [ -n "$expected" ] || fail "the GitHub release API exposed no digest for '$asset' — refusing to install unverified (API contract change?)"
-  expected=${expected#sha256:}
-  actual=$(compute_sha256 "$archive")
-  if [ "$actual" != "$expected" ]; then
-    fail "SHA-256 mismatch for $asset (expected $expected, got $actual) — the download was corrupted or tampered with; not installing."
+  if [ "$api_code" = 200 ]; then
+    expected=$(awk -v a="$asset" '
+      /"name":/ { inasset = (index($0, "\"" a "\"") > 0) }
+      inasset && /"digest":/ { sub(/.*"digest": *"/, ""); sub(/".*/, ""); print; exit }
+    ' "$api_json")
+    expected=${expected#sha256:}
+    [ -n "$expected" ] || fail "the GitHub release API exposed no digest for '$asset' — refusing to install unverified (API contract change?)"
   fi
-  echo "    digest OK ($actual)"
+  cached_hash=""
+  stored_digest=""
+  if [ -f "$cache_file" ]; then
+    cached_hash=$(compute_sha256 "$cache_file")
+    stored_digest=$(head -n 1 "$digest_file" 2>/dev/null || true)
+  fi
+  if [ -n "$expected" ] && [ "$cached_hash" = "$expected" ]; then
+    archive="$cache_file"
+    printf '%s\n' "$expected" > "$digest_file"
+    echo "==> reusing cached release archive $cache_file"
+    echo "    digest OK ($expected)"
+  elif [ -z "$expected" ] && [ -n "$cached_hash" ] \
+       && [ -n "$stored_digest" ] && [ "$cached_hash" = "$stored_digest" ]; then
+    # The sidecar digest was written only after a GitHub-verified download,
+    # so the cache pair still chains to an attested digest — reuse it with a
+    # loud warning instead of failing the whole install during an API outage.
+    archive="$cache_file"
+    warn "GitHub API unreachable (HTTP $api_code) — reusing the previously verified cached archive"
+    echo "    digest OK ($cached_hash)"
+  elif [ -z "$expected" ]; then
+    case "$api_code" in
+      403|429)
+        fail "GitHub API rate limit reached (HTTP $api_code) — retry in a while, or set SLOPON_GH_TOKEN to a token and re-run." ;;
+      *)
+        fail "GitHub release API returned HTTP $api_code — cannot verify the archive digest." ;;
+    esac
+  else
+    echo "==> downloading $asset"
+    partial="$cache_file.partial"
+    curl -fSL --retry 3 -o "$partial" "$archive_src" \
+      || { rm -f "$partial"; fail "download failed: $archive_src"; }
+    actual=$(compute_sha256 "$partial")
+    if [ "$actual" != "$expected" ]; then
+      rm -f "$partial"
+      fail "SHA-256 mismatch for $asset (expected $expected, got $actual) — the download was corrupted or tampered with; not installing."
+    fi
+    mv -f "$partial" "$cache_file"
+    printf '%s\n' "$expected" > "$digest_file"
+    archive="$cache_file"
+    echo "    digest OK ($actual)"
+  fi
 fi
 
 # ── 3. Refuse to upgrade while SlopOn is running ───────────────────────────

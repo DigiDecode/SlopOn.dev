@@ -15,6 +15,9 @@
 #                             local paths) or an explicit URL (checksum verified)
 #   SLOPON_GH_TOKEN=tok       GitHub API token (avoids anonymous rate limits)
 #   SLOPON_SKIP_CHECKSUM=1    skip release-archive digest verification (CI only)
+#
+# The release archive is cached in ~\.slopon\cache and reused across runs when
+# its SHA-256 matches the GitHub release API digest (skips the ~20 MB download).
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 can default to TLS 1.0 on older builds; everything
 # we talk to (github.com, nodejs.org) requires TLS 1.2+.
@@ -63,13 +66,14 @@ New-Item -ItemType Directory -Path $Tmp | Out-Null
 
 $ArchiveSrc = if ($env:SLOPON_ARCHIVE) { $env:SLOPON_ARCHIVE } else { "$DefaultDlBase/$Asset" }
 $IsUrl = $ArchiveSrc -match '^https?://'
-$VerifyDigest = $IsUrl
 
+$Archive = $null
 if (-not $IsUrl) {
     if (-not (Test-Path $ArchiveSrc)) { Fail "SLOPON_ARCHIVE file not found: $ArchiveSrc" }
     Write-Host "==> using local archive $ArchiveSrc (digest verification skipped by design for local files)"
     $Archive = (Resolve-Path $ArchiveSrc).Path
-} else {
+} elseif ($env:SLOPON_SKIP_CHECKSUM -eq '1') {
+    Warn 'SLOPON_SKIP_CHECKSUM=1 - skipping archive digest verification (CI-only escape hatch)'
     Write-Host "==> downloading $Asset"
     $Archive = Join-Path $Tmp $Asset
     try {
@@ -77,15 +81,19 @@ if (-not $IsUrl) {
     } catch {
         Fail "download failed: $ArchiveSrc ($($_.Exception.Message))"
     }
-}
-
-if ($env:SLOPON_SKIP_CHECKSUM -eq '1') {
-    Warn 'SLOPON_SKIP_CHECKSUM=1 - skipping archive digest verification (CI-only escape hatch)'
-    $VerifyDigest = $false
-}
-
-if ($VerifyDigest) {
-    Write-Host '==> verifying SHA-256 against the GitHub release API'
+} else {
+    # The release archive is cached under ~\.slopon\cache so repeat installs
+    # (upgrades) skip the ~20 MB CDN download. The GitHub API digest is
+    # fetched FIRST - it is the reuse anchor for the cache and the
+    # verification anchor for a fresh download; integrity is never skipped,
+    # only satisfied early.
+    $CacheDir = Join-Path $SloponHome 'cache'
+    $CacheFile = Join-Path $CacheDir $Asset
+    $DigestFile = "$CacheFile.sha256"
+    New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
+    Write-Host '==> resolving the release digest from the GitHub release API'
+    $Expected = $null
+    $ApiFailure = $null
     try {
         $Headers = @{ Accept = 'application/vnd.github+json' }
         if ($env:SLOPON_GH_TOKEN) { $Headers['Authorization'] = "Bearer $($env:SLOPON_GH_TOKEN)" }
@@ -94,23 +102,58 @@ if ($VerifyDigest) {
         $code = 0
         if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
         if ($code -eq 403 -or $code -eq 429) {
-            Fail "GitHub API rate limit reached (HTTP $code) - retry in a while, or set SLOPON_GH_TOKEN to a token and re-run."
+            $ApiFailure = "GitHub API rate limit reached (HTTP $code) - retry in a while, or set SLOPON_GH_TOKEN to a token and re-run."
+        } else {
+            $ApiFailure = "GitHub release API request failed (HTTP $code) - cannot verify the archive digest."
         }
-        Fail "GitHub release API request failed (HTTP $code) - cannot verify the archive digest."
     }
-    $Expected = $null
-    foreach ($a in $Release.assets) {
-        if ($a.name -eq $Asset) { $Expected = $a.digest; break }
+    if (-not $ApiFailure) {
+        foreach ($a in $Release.assets) {
+            if ($a.name -eq $Asset) { $Expected = $a.digest; break }
+        }
+        if (-not $Expected) {
+            Fail "the GitHub release API exposed no digest for '$Asset' - refusing to install unverified (API contract change?)."
+        }
+        $Expected = $Expected -replace '^sha256:', ''
     }
-    if (-not $Expected) {
-        Fail "the GitHub release API exposed no digest for '$Asset' - refusing to install unverified (API contract change?)."
+    $CacheHash = $null
+    $StoredDigest = $null
+    if (Test-Path $CacheFile) {
+        $CacheHash = (Get-FileHash -Path $CacheFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        try { $StoredDigest = (Get-Content $DigestFile -ErrorAction Stop | Select-Object -First 1).Trim() } catch { $StoredDigest = $null }
     }
-    $Expected = $Expected -replace '^sha256:', ''
-    $Actual = (Get-FileHash -Path $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($Actual -ne $Expected) {
-        Fail "SHA-256 mismatch for $Asset (expected $Expected, got $Actual) - the download was corrupted or tampered with; not installing."
+    if ($Expected -and $CacheHash -eq $Expected) {
+        $Archive = $CacheFile
+        Set-Content -Path $DigestFile -Value $Expected -Encoding ascii
+        Write-Host "==> reusing cached release archive $CacheFile"
+        Write-Host "    digest OK ($Expected)"
+    } elseif (-not $Expected -and $CacheHash -and $StoredDigest -and $CacheHash -eq $StoredDigest) {
+        # The sidecar digest was written only after a GitHub-verified
+        # download, so the cache pair still chains to an attested digest -
+        # reuse it with a loud warning instead of failing during an API outage.
+        $Archive = $CacheFile
+        Warn "GitHub API unreachable - reusing the previously verified cached archive ($ApiFailure)"
+        Write-Host "    digest OK ($CacheHash)"
+    } elseif (-not $Expected) {
+        Fail $ApiFailure
+    } else {
+        Write-Host "==> downloading $Asset"
+        $Partial = "$CacheFile.partial"
+        try {
+            Invoke-WebRequest -Uri $ArchiveSrc -OutFile $Partial -UseBasicParsing
+        } catch {
+            Fail "download failed: $ArchiveSrc ($($_.Exception.Message))"
+        }
+        $Actual = (Get-FileHash -Path $Partial -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($Actual -ne $Expected) {
+            Remove-Item $Partial -Force -ErrorAction SilentlyContinue
+            Fail "SHA-256 mismatch for $Asset (expected $Expected, got $Actual) - the download was corrupted or tampered with; not installing."
+        }
+        Move-Item -Path $Partial -Destination $CacheFile -Force
+        Set-Content -Path $DigestFile -Value $Expected -Encoding ascii
+        $Archive = $CacheFile
+        Write-Host "    digest OK ($Actual)"
     }
-    Write-Host "    digest OK ($Actual)"
 }
 
 # ── 3. Refuse to upgrade while SlopOn is running ───────────────────────────
