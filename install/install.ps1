@@ -377,7 +377,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 # ── 9. Summary ─────────────────────────────────────────────────────────────
 Write-Host ''
 Write-Host 'SlopOn installed successfully.'
-Write-Host "  Install root : $InstallRoot"
+Write-Host "  Install home : $InstallRoot"
 Write-Host '  Start        : type `slopon` in a NEW terminal (this one already has it),'
 Write-Host '                 or SlopOn (Start Menu)'
 Write-Host "                 direct: $(Join-Path $InstallRoot 'launcher\slopon.cmd')"

@@ -437,7 +437,7 @@ esac
 # ── 9. Summary ─────────────────────────────────────────────────────────────
 echo
 echo "SlopOn installed successfully."
-echo "  Install root : $install_root"
+echo "  Install home : $install_root"
 echo "  Start        : 'slopon' in a NEW terminal, or launch SlopOn from"
 echo "                 your applications folder/menu"
 echo "                 (direct: $install_root/launcher/slopon.sh)"
