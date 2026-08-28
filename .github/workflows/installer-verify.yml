@@ -62,6 +62,23 @@ jobs:
       - name: Syntax-check the launcher core
         run: node --check launcher/launcher.mjs
 
+      - name: PowerShell parse install.ps1 (catches unterminated strings before any leg burns)
+        shell: pwsh
+        run: |
+          # A parse error only surfaces on the Windows legs (no POSIX runner
+          # executes the script), turning a 1-line lint problem into 6 red
+          # jobs. Parse it here, where it costs seconds.
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/install/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count) {
+            $errors | ForEach-Object {
+              "::error::$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber) $($_.Message)"
+            }
+            exit 1
+          }
+          Write-Host 'install.ps1 parses clean'
+
       - name: Node pin resolves to real, v-prefixed nodejs.org assets (both platforms)
         run: |
           # No CI runner lacks Node, so the installer's bundled-Node download
