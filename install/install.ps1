@@ -421,8 +421,11 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 Write-Host ''
 Write-Host 'SlopOn installed successfully.'
 Write-Host "  Install home : $InstallRoot"
-Write-Host '  Start        : type `slopon` in a NEW terminal (this one already has it),'
-Write-Host '                 or SlopOn (Start Menu)'
+Write-Host '  Start        : type `slopon` in a NEW terminal, or SlopOn (Start Menu).'
+Write-Host "                 A terminal that is already open cannot pick this up (a child"
+Write-Host "                 process cannot modify its parent's PATH). To use it in the"
+Write-Host "                 terminal that ran this installer, paste:"
+Write-Host "                   `$env:Path += ';$(Join-Path $InstallRoot 'launcher')'""
 Write-Host "                 direct: $(Join-Path $InstallRoot 'launcher\slopon.cmd')"
 Write-Host "  Stop backend : `"$(Join-Path $InstallRoot 'launcher\slopon.cmd')`" --stop  (best-effort hard kill)"
 Write-Host "  Logs         : $(Join-Path $SloponHome 'logs\backend.log') and launcher.log"

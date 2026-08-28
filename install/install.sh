@@ -469,6 +469,14 @@ case "$os" in
   Linux)
     ensure_path_line "$HOME/.profile"
     if [ -f "$HOME/.bash_profile" ]; then ensure_path_line "$HOME/.bash_profile"; fi
+    # Interactive non-login terminals (gnome-terminal, konsole, `ssh host`)
+    # read .bashrc and never .profile — without this, slopon only appears
+    # after the next full login. Same rationale as the zsh pair on macOS.
+    ensure_path_line "$HOME/.bashrc"
+    # zsh on Linux: cover it when in use, but never create zsh files for a
+    # bash-only machine (unlike macOS, where zsh is the default shell).
+    if [ -f "$HOME/.zshrc" ]; then ensure_path_line "$HOME/.zshrc"; fi
+    if [ -f "$HOME/.zprofile" ]; then ensure_path_line "$HOME/.zprofile"; fi
     ;;
 esac
 
