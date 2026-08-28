@@ -207,11 +207,13 @@ else
 fi
 
 if [ "$node_kind" != "system" ]; then
-  node_file="node-$NODE_VERSION-$node_os_arch.tar.gz"
+  # Official asset names AND dist directories carry a leading "v"
+  # (https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.gz).
+  node_file="node-v$NODE_VERSION-$node_os_arch.tar.gz"
   echo "==> downloading $node_file"
-  curl -fSL --retry 3 -o "$tmp/$node_file" "$NODE_DIST_BASE/$NODE_VERSION/$node_file" \
+  curl -fSL --retry 3 -o "$tmp/$node_file" "$NODE_DIST_BASE/v$NODE_VERSION/$node_file" \
     || fail "Node runtime download failed"
-  curl -fsSL -o "$tmp/SHASUMS256.txt" "$NODE_DIST_BASE/$NODE_VERSION/SHASUMS256.txt" \
+  curl -fsSL -o "$tmp/SHASUMS256.txt" "$NODE_DIST_BASE/v$NODE_VERSION/SHASUMS256.txt" \
     || fail "could not download SHASUMS256.txt for Node $NODE_VERSION"
   node_expected=$(awk -v f="$node_file" '$2 == f { print $1; exit }' "$tmp/SHASUMS256.txt")
   [ -n "$node_expected" ] || fail "$node_file not listed in SHASUMS256.txt"

@@ -157,17 +157,19 @@ if ($SysNodeVersion -and ($SysNodeVersion -match '^v(20|22)\.')) {
 }
 
 if ($NodeKind -ne 'system') {
-    $NodeFile = "node-$NodeVersion-win-x64.zip"
+    # Official asset names AND the dist directory carry a leading "v"
+    # (https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-x64.zip).
+    $NodeFile = "node-v$NodeVersion-win-x64.zip"
     Write-Host "==> downloading $NodeFile"
     $NodeZip = Join-Path $Tmp $NodeFile
     try {
-        Invoke-WebRequest -Uri "$NodeDistBase/$NodeVersion/$NodeFile" -OutFile $NodeZip -UseBasicParsing
+        Invoke-WebRequest -Uri "$NodeDistBase/v$NodeVersion/$NodeFile" -OutFile $NodeZip -UseBasicParsing
     } catch {
         Fail "Node runtime download failed: $($_.Exception.Message)"
     }
     $SumsFile = Join-Path $Tmp 'SHASUMS256.txt'
     try {
-        Invoke-WebRequest -Uri "$NodeDistBase/$NodeVersion/SHASUMS256.txt" -OutFile $SumsFile -UseBasicParsing
+        Invoke-WebRequest -Uri "$NodeDistBase/v$NodeVersion/SHASUMS256.txt" -OutFile $SumsFile -UseBasicParsing
     } catch {
         Fail "could not download SHASUMS256.txt for Node $NodeVersion"
     }

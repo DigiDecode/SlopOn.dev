@@ -62,6 +62,27 @@ jobs:
       - name: Syntax-check the launcher core
         run: node --check launcher/launcher.mjs
 
+      - name: Node pin resolves to real, v-prefixed nodejs.org assets (both platforms)
+        run: |
+          # No CI runner lacks Node, so the installer's bundled-Node download
+          # branch never runs in the matrix legs. This is the cheap stand-in:
+          # both scripts must pin the SAME version, and the constructed
+          # nodejs.org/dist URLs must exist. (Field failure this guards:
+          # node-<ver>…/dist/<ver> 404ing because official names carry a
+          # leading "v" — dist dirs too.)
+          sh_ver=$(sed -n 's/^NODE_VERSION="\([0-9.]*\)"$/\1/p' install/install.sh)
+          ps_ver=$(sed -n "s/^\$NodeVersion = '\([0-9.]*\)'\$/\1/p" install/install.ps1)
+          if [ -z "$sh_ver" ] || [ "$sh_ver" != "$ps_ver" ]; then
+            echo "::error::Node pins differ or unparsable (install.sh='$sh_ver' install.ps1='$ps_ver')"; exit 1
+          fi
+          for f in "node-v$sh_ver-linux-x64.tar.gz" "node-v$sh_ver-win-x64.zip"; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -I "https://nodejs.org/dist/v$sh_ver/$f")
+            if [ "$code" != 200 ]; then
+              echo "::error::node dist asset missing (https://nodejs.org/dist/v$sh_ver/$f -> HTTP $code)"; exit 1
+            fi
+          done
+          echo "Node pin $sh_ver resolves on nodejs.org/dist (linux-x64 + win-x64 assets 200)"
+
   e2e:
     name: e2e (${{ matrix.leg }})
     needs: lint
@@ -229,6 +250,32 @@ jobs:
         run: |
           # irm + iex through powershell.exe mirrors the documented command.
           powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex"
+
+      - name: Nodeless scratch install (linux-x64 — exercises the bundled-Node path)
+        if: matrix.leg == 'linux-x64'
+        run: |
+          # The matrix legs install with the runner's Node present, so the
+          # bundled-runtime branch (download + SHASUMS + extract + npm ci via
+          # nodejs.org's Node) never executes there — it broke in the field
+          # with a 404 and no CI leg noticed. This scratch install runs the
+          # whole installer with Node scrubbed from the environment and a
+          # fresh HOME (isolated from the main leg's install above), then
+          # asserts the bundled runtime actually landed and runs.
+          scratch_home="$RUNNER_TEMP/nodeless-home"
+          mkdir -p "$scratch_home"
+          if [ "$MODE" = live ]; then
+            env -i HOME="$scratch_home" PATH="/usr/bin:/bin" \
+              sh -c 'curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh'
+          else
+            env -i HOME="$scratch_home" PATH="/usr/bin:/bin" \
+              SLOPON_ARCHIVE="$PWD/out/slopon-linux-x64.tar.gz" \
+              sh install/install.sh
+          fi
+          bundled="$scratch_home/.local/opt/slopon/node-runtime/bin/node"
+          if [ ! -x "$bundled" ]; then
+            echo '::error::nodeless install did not provision node-runtime'; exit 1
+          fi
+          echo "nodeless install OK: bundled $($bundled --version)"
 
       # The assertion steps below launch the REAL GUI, which is a release
       # build with telemetry enabled — on a fresh runner it would send a
