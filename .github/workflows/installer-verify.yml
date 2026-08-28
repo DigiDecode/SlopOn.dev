@@ -279,6 +279,24 @@ jobs:
             echo '::error::nodeless install did not provision node-runtime'; exit 1
           fi
           echo "nodeless install OK: bundled $($bundled --version)"
+          # Second run must REUSE the runtime instead of re-downloading it —
+          # repeat installs on nodeless machines are the norm (upgrades), and
+          # the download is ~25 MB each time.
+          if [ "$MODE" = live ]; then
+            env -i HOME="$scratch_home" PATH="/usr/bin:/bin" \
+              sh -c 'curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh' > "$RUNNER_TEMP/nodeless-rerun.log" 2>&1
+          else
+            env -i HOME="$scratch_home" PATH="/usr/bin:/bin" \
+              SLOPON_ARCHIVE="$PWD/out/slopon-linux-x64.tar.gz" \
+              sh install/install.sh > "$RUNNER_TEMP/nodeless-rerun.log" 2>&1
+          fi
+          grep -q 'reusing bundled Node' "$RUNNER_TEMP/nodeless-rerun.log" || {
+            echo '::error::second nodeless install re-downloaded the runtime instead of reusing it'; cat "$RUNNER_TEMP/nodeless-rerun.log"; exit 1
+          }
+          if grep -q 'downloading node-' "$RUNNER_TEMP/nodeless-rerun.log"; then
+            echo '::error::second nodeless install downloaded a Node tarball'; exit 1
+          fi
+          echo "nodeless reuse OK: $($bundled --version) reused on second install"
 
       # The assertion steps below launch the REAL GUI, which is a release
       # build with telemetry enabled — on a fresh runner it would send a
