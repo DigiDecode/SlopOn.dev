@@ -165,7 +165,12 @@ function spawnBackend(nodeBin) {
 }
 
 function spawnGui() {
-  const options = { detached: true, stdio: 'ignore', windowsHide: true };
+  // windowsHide must NOT be set for the GUI: on Windows it places
+  // STARTF_USESHOWWINDOW=SW_HIDE in the child's STARTUPINFO, so the app's
+  // first window is created hidden — the process runs but nothing ever
+  // appears, and no error fires. A GUI-subsystem exe never creates a
+  // console, so the flag has nothing to prevent.
+  const options = { detached: true, stdio: 'ignore' };
   let child;
   if (IS_WIN) {
     child = spawn(path.join(installRoot, 'frontend', 'slopon_dev.exe'), [], options);
@@ -253,27 +258,25 @@ async function stop() {
 
   log(`--stop: stopping backend pid ${pid}`);
   if (IS_WIN) {
-    // Best-effort tree kill: /T covers the supervised runner child. Node
-    // SIGTERM handlers do not run for external kills; SQLite journal/WAL
-    // recovery makes the hard kill safe.
-    spawnSync('taskkill', ['/PID', String(pid), '/T'], { windowsHide: true, stdio: 'ignore' });
+    // Windows has no graceful external signal: taskkill without /F only posts
+    // WM_CLOSE to a window — a windowless console node ignores it, so the old
+    // grace-first flow burned the full 15 s and then force-killed anyway — and
+    // TerminateProcess never runs Node signal handlers. SQLite journal/WAL
+    // recovery makes the immediate hard kill safe (/T covers the supervised
+    // runner child).
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
   } else {
     try {
       process.kill(pid, 'SIGTERM');
     } catch (err) {
       log(`--stop: SIGTERM failed (${err.message}) — escalating`);
     }
-  }
-
-  const deadline = Date.now() + STOP_GRACE_MS;
-  while (Date.now() < deadline && isPidAlive(pid)) {
-    await sleep(POLL_MS);
-  }
-  if (isPidAlive(pid)) {
-    log(`--stop: pid ${pid} survived the grace period — force killing`);
-    if (IS_WIN) {
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-    } else {
+    const deadline = Date.now() + STOP_GRACE_MS;
+    while (Date.now() < deadline && isPidAlive(pid)) {
+      await sleep(POLL_MS);
+    }
+    if (isPidAlive(pid)) {
+      log(`--stop: pid ${pid} survived the grace period — force killing`);
       try {
         process.kill(pid, 'SIGKILL');
       } catch (err) {
