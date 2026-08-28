@@ -349,6 +349,24 @@ jobs:
           [ "$backends" = "1" ] || { echo "::error::expected exactly 1 backend process, found $backends"; exit 1; }
           echo '::endgroup::'
 
+          echo '::group::foreign squatter on the configured port: spawn and move'
+          "$LAUNCHER" --stop
+          port0=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.port')
+          # A silent TCP listener stands in for a foreign squatter (ssh -L
+          # forward, stray service): accepts connections, never answers a
+          # WebSocket upgrade, and no pidfile exists (the --stop removed it).
+          node -e 'require("net").createServer(()=>{}).listen(+process.argv[1], "127.0.0.1", () => console.log("squatter up"))' "$port0" &
+          squatter_pid=$!
+          sleep 1
+          "$LAUNCHER"
+          tail -n 8 "$SLOPON_HOME/logs/launcher.log" | grep -q 'held by a non-WebSocket process' || { echo '::error::foreign squatter did not trigger the spawn-and-move path'; exit 1; }
+          port1=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.port')
+          [ "$port1" -gt "$port0" ] || { echo "::error::backend did not move off the squatted port ($port0 -> $port1)"; exit 1; }
+          [ -n "$(cat "$SLOPON_HOME/backend.pid")" ] || { echo '::error::no pidfile after squatter self-heal'; exit 1; }
+          kill "$squatter_pid" 2>/dev/null || true
+          echo "moved $port0 -> $port1 past the foreign squatter"
+          echo '::endgroup::'
+
           echo '::group::upgrade refusal while the backend runs'
           if [ "$MODE" = live ]; then
             if curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh; then
