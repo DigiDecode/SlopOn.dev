@@ -272,6 +272,9 @@ jobs:
             echo "- Frontend version: $FRONTEND_VERSION"
             echo "- Backend version: $BACKEND_VERSION"
             echo
+            # The markers delimit this table for the vt-scan job, which
+            # rewrites the block as a 4-column table after scanning.
+            echo "<!-- vt-table:start -->"
             echo "| Platform | Asset | SHA-256 |"
             echo "|---|---|---|"
             for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
@@ -284,6 +287,7 @@ jobs:
               sha=$(sha256sum "$file" | awk '{print $1}')
               echo "| $platform | slopon-$platform.$ext | \`$sha\` |"
             done
+            echo "<!-- vt-table:end -->"
             echo
             echo "Each archive contains \`README.md\`, \`frontend/\`, \`backend/\` and \`launcher/\`. The backend requires Node.js ≥ 20, or use the one-liner installer: https://slopon.dev/install.sh (macOS/Linux) / https://slopon.dev/install.ps1 (Windows)."
             echo
@@ -333,3 +337,127 @@ jobs:
     with:
       mode: 'live'
     secrets: inherit
+
+  vt-scan:
+    name: vt-scan
+    # Fail-soft: VT verdicts are appended after the release is live, so a
+    # VirusTotal problem (quota, timeout, outage) must never turn the run
+    # red — warnings and empty cells only. Runs in parallel with
+    # verify-installers, which never touches the release body.
+    needs: [resolve, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60   # backstop: 4 files × (upload + ≤600 s polling) fits
+    permissions:
+      contents: write   # rewrite the release body (Rule 2: job-scoped)
+    steps:
+      - name: Checkout SlopOn.dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Only .github/scripts/vt_scan.py is needed; nothing later requires
+          # the persisted token (gh uses GH_TOKEN).
+          persist-credentials: false
+
+      - name: Download artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          # Isolated path (Rule 7); all four artifacts land under
+          # dist/combined-<platform>/ — same layout as the publish job.
+          path: dist
+
+      - name: Set up Python
+        # Toolcache Python, not system pip: Ubuntu 24.04 marks the system
+        # interpreter as externally managed (PEP 668).
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install vt-py
+        run: python3 -m pip install --disable-pip-version-check vt-py==0.22.0
+
+      - name: Scan artifacts with VirusTotal
+        # The key enters only via step-level env (Rule 5) — never
+        # interpolated into run:.
+        env:
+          TOTALVIRUS_API_KEY: ${{ secrets.TOTALVIRUS_API_KEY }}
+        run: |
+          python3 -m py_compile .github/scripts/vt_scan.py
+          files=()
+          for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
+            # Keep this platform→ext mapping in sync with the package matrix.
+            case "$platform" in
+              linux-x64) ext=tar.gz ;;
+              *) ext=zip ;;
+            esac
+            files+=("dist/combined-$platform/slopon-$platform.$ext")
+          done
+          python3 .github/scripts/vt_scan.py "${files[@]}" | tee vt-results.tsv
+
+      - name: Add VirusTotal column to the release table
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicit on purpose: same convention as the publish job.
+          GH_REPO: DigiDecode/SlopOn.dev
+          BACKEND_VERSION: ${{ needs.resolve.outputs.backend_version }}
+        run: |
+          tag="v$BACKEND_VERSION"
+          # Fail-soft guards: with no usable results or an unreadable body,
+          # warn and leave the notes exactly as publish wrote them.
+          if [ ! -s vt-results.tsv ]; then
+            echo "::warning::No VirusTotal results — release body left unchanged"
+            exit 0
+          fi
+          if ! awk -F'\t' 'NF >= 2 && $2 != "" { found = 1 } END { exit !found }' vt-results.tsv; then
+            echo "::warning::Every VirusTotal scan failed — release body left unchanged"
+            exit 0
+          fi
+          if ! gh release view "$tag" --json body --jq .body > body.md; then
+            echo "::warning::Could not read the release body — left unchanged"
+            exit 0
+          fi
+          if ! grep -qx '<!-- vt-table:start -->' body.md \
+             || ! grep -qx '<!-- vt-table:end -->' body.md; then
+            echo "::warning::Release body has no vt-table markers — left unchanged"
+            exit 0
+          fi
+          # Pre-flight: every artifact must be present to build the table;
+          # a warning inside the redirected group below would be swallowed.
+          for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
+            case "$platform" in
+              linux-x64) ext=tar.gz ;;
+              *) ext=zip ;;
+            esac
+            if [ ! -f "dist/combined-$platform/slopon-$platform.$ext" ]; then
+              echo "::warning::Artifact 'dist/combined-$platform/slopon-$platform.$ext' missing — release body left unchanged"
+              exit 0
+            fi
+          done
+          # Rebuild the marked block as a 4-column table; a failed scan keeps
+          # an empty VirusTotal cell on its row.
+          {
+            echo "| Platform | Asset | SHA-256 | VirusTotal |"
+            echo "|---|---|---|---|"
+            for platform in windows-x64 linux-x64 macos-x64 macos-arm64; do
+              case "$platform" in
+                linux-x64) ext=tar.gz ;;
+                *) ext=zip ;;
+              esac
+              file="dist/combined-$platform/slopon-$platform.$ext"
+              sha=$(sha256sum "$file" | awk '{print $1}')
+              cell=$(awk -F'\t' -v want="$sha" '$1 == want && $2 != "" { print $2; exit }' vt-results.tsv)
+              echo "| $platform | slopon-$platform.$ext | \`$sha\` | $cell |"
+            done
+          } > vt-block.md
+          # Splice the new block between the markers. The markers stay in the
+          # body, so re-dispatching overwrites the column in place — no
+          # duplicated tables or rows.
+          awk -v block=vt-block.md '
+            /^<!-- vt-table:start -->$/ { print; while ((getline line < block) > 0) print line; close(block); skip = 1; next }
+            /^<!-- vt-table:end -->$/ { skip = 0; print; next }
+            !skip { print }
+          ' body.md > body-new.md
+          # Guarded edit: bash -e would otherwise redden the job on a transient
+          # gh/API failure — the body stays valid either way.
+          if ! gh release edit "$tag" --notes-file body-new.md; then
+            echo "::warning::Could not update the release body — left unchanged"
+          fi
