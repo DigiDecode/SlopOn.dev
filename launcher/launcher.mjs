@@ -10,6 +10,7 @@
 // from platform shortcuts. ~/.slopon is the backend's data dir — the launcher
 // only ever touches backend.pid and logs/ inside it, never config or data.
 import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
@@ -83,6 +84,36 @@ function probeTcp(host, port, timeoutMs = PROBE_TIMEOUT_MS) {
     };
     socket.setTimeout(timeoutMs, () => settle(false));
     socket.once('connect', () => settle(true));
+    socket.once('error', () => settle(false));
+  });
+}
+
+// Distinguishes a real WebSocket server from a foreign holder of the port
+// (ssh -L forwards, SOCKS proxies, plain HTTP): only a ws server answers a
+// valid upgrade request with "101". Same privilege profile as probeTcp — one
+// outbound loopback connect. Deliberately pre-auth: any ws server answering
+// 101 counts as "a backend is here" (manual start); anything else counts as
+// a squatter worth spawning over.
+function probeWebSocket(host, port, timeoutMs = PROBE_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const key = randomBytes(16).toString('base64');
+    const socket = net.connect({ host, port });
+    const settle = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs, () => settle(false));
+    let firstResponse = '';
+    socket.once('connect', () =>
+      socket.write(
+        `GET / HTTP/1.1\r\nHost: ${host}:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+      ),
+    );
+    socket.on('data', (chunk) => {
+      firstResponse += chunk.toString('latin1');
+      settle(/^HTTP\/1\.1 101 /i.test(firstResponse));
+    });
+    socket.once('close', () => settle(false));
     socket.once('error', () => settle(false));
   });
 }
@@ -239,18 +270,20 @@ async function start() {
       spawnGui();
       return;
     }
-    if (pid === null) {
-      log(
-        `warning: ${target.host}:${target.port} is listening but no pidfile exists — if no backend was started manually, stop whatever holds the port or set a different "server.port" in ${configPath}; not spawning a second one`,
-      );
+    if (pid === null && (await probeWebSocket(target.host, target.port))) {
+      log(`warning: ${target.host}:${target.port} serves a WebSocket backend without a pidfile — likely started manually; not spawning a second one. If this is not your backend, stop it or set a different "server.port" in ${configPath}`);
       spawnGui();
       return;
     }
-    // Stale pidfile: the recorded backend is gone, so whatever holds the
-    // configured port is foreign. Spawning is safe — the backend moves to the
-    // next free port and persists it, and readiness waits for that persisted
-    // move before trusting a probe.
-    log(`stale pidfile (pid ${pid} is gone) while ${target.host}:${target.port} is in use — spawning a backend; it will move to the next free port and update ${configPath}`);
+    // No pidfile (or a stale one) and the listener is foreign — it did not
+    // answer a WebSocket upgrade. Spawn: the backend moves to the next free
+    // port and persists it, and readiness waits for that persisted move
+    // before trusting a probe of the busy port.
+    if (pid !== null) {
+      log(`stale pidfile (pid ${pid} is gone) while ${target.host}:${target.port} is in use — spawning a backend; it will move to the next free port and update ${configPath}`);
+    } else {
+      log(`${target.host}:${target.port} is held by a non-WebSocket process (port forward or other service) — spawning a backend; it will move to the next free port and update ${configPath}`);
+    }
     expectPortMove = true;
   }
 
