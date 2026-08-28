@@ -200,14 +200,33 @@ if ($NodeKind -ne 'system') {
 }
 
 # npm resolution: bundled runtime ships npm.cmd next to node.exe; system Node
-# resolves npm from PATH.
-$NpmCmd = $null
+# resolves npm from PATH. Preferred invocation is npm-cli.js run through node
+# directly — a bare `npm` on Windows can resolve through version-manager or
+# corepack shims that forward differently per shell.
+$NpmCmd = $null   # single .cmd/.exe path — fallback invocation
+$NpmCli = $null   # node_modules\npm\bin\npm-cli.js — preferred
+$NodeExe = $NodeBin
 if ($NodeBin) {
     $NpmCmd = Join-Path (Split-Path $NodeBin) 'npm.cmd'
     if (-not (Test-Path $NpmCmd)) { Fail "npm not found next to the bundled Node ($NpmCmd)" }
 } else {
-    $NpmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source
+    # -CommandType Application keeps aliases/functions/ps1 scripts out. With
+    # more than one npm on PATH (version-manager shim dirs ship npm.ps1 AND
+    # npm.cmd), .Source member-enumerates into an ARRAY and the call operator
+    # then splats it into command + bogus arguments — observed in the wild as
+    # npm answering 'Unknown command: "NpmCmd"'. Always pick exactly one real
+    # executable.
+    $NpmCmd = @((Get-Command npm -CommandType Application -ErrorAction SilentlyContinue)) |
+        ForEach-Object { $_.Source } |
+        Where-Object { $_ -and ($_ -match '\.(cmd|exe)$') } |
+        Select-Object -First 1
     if (-not $NpmCmd) { Fail 'npm not found on PATH (system Node without npm?)' }
+    $NodeExe = @((Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)) |
+        Select-Object -First 1 -ExpandProperty Source
+}
+if ($NodeExe) {
+    $candidate = Join-Path (Split-Path $NodeExe) 'node_modules\npm\bin\npm-cli.js'
+    if (Test-Path $candidate) { $NpmCli = $candidate }
 }
 
 # ── 5. git (warning only) ──────────────────────────────────────────────────
@@ -266,7 +285,12 @@ try {
         # own node.exe and any spawned shims use the same runtime.
         $env:PATH = "$(Split-Path $NodeBin);$($env:PATH)"
     }
-    & $NpmCmd ci --no-audit --no-fund
+    if ($NpmCli) {
+        # Direct npm-cli.js via node — immune to npm shims on PATH.
+        & $NodeExe $NpmCli ci --no-audit --no-fund
+    } else {
+        & $NpmCmd ci --no-audit --no-fund
+    }
     if ($LASTEXITCODE -ne 0) { throw 'npm ci exited non-zero' }
 } catch {
     Fail "npm ci failed - see the output above; your install files are in place but the backend has no dependencies yet."

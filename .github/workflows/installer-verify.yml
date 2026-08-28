@@ -506,12 +506,29 @@ jobs:
 
           Write-Host '::group::upgrade with everything stopped preserves ~/.slopon'
           $before = (Get-Content (Join-Path $SloponHome 'config.json') -Raw | ConvertFrom-Json).server.apiKey
-          if ($env:MODE -eq 'live') {
-            powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun3.out
-          } else {
-            powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun3.out
+          # Poison PATH the way version-manager shim dirs do: TWO npm commands
+          # (npm.ps1 + npm.cmd) ahead of the real one. With both present, a
+          # bare (Get-Command npm).Source member-enumerates into an array and
+          # the call operator splats it into bogus npm arguments — the exact
+          # shape that broke a real user's install ('Unknown command').
+          # Regression guard for install.ps1's npm resolution.
+          $keepPath = $env:Path
+          $RealNpm = (Get-Command npm.cmd -CommandType Application | Select-Object -First 1).Source
+          $ShimDir = Join-Path $env:RUNNER_TEMP 'npm-shims'
+          New-Item -ItemType Directory -Path $ShimDir -Force | Out-Null
+          Set-Content -Path (Join-Path $ShimDir 'npm.ps1') -Value ("& '{0}' @args" -f $RealNpm)
+          Set-Content -Path (Join-Path $ShimDir 'npm.cmd') -Value ('@"{0}" %*' -f $RealNpm)
+          $env:Path = "$ShimDir;$keepPath"
+          try {
+            if ($env:MODE -eq 'live') {
+              powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun3.out
+            } else {
+              powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun3.out
+            }
+          } finally {
+            $env:Path = $keepPath
           }
-          if ($LASTEXITCODE -ne 0) { Get-Content rerun3.out; Write-Host '::error::all-stopped upgrade failed'; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Get-Content rerun3.out; Write-Host '::error::all-stopped upgrade failed (npm-shim PATH)'; exit 1 }
           $after = (Get-Content (Join-Path $SloponHome 'config.json') -Raw | ConvertFrom-Json).server.apiKey
           if ($before -ne $after) { Write-Host '::error::~/.slopon config changed across the upgrade'; exit 1 }
           Write-Host '::endgroup::'
