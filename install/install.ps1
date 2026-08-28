@@ -156,7 +156,23 @@ if ($SysNodeVersion -and ($SysNodeVersion -match '^v(20|22)\.')) {
     Write-Host "==> Node not found on PATH - will provision bundled Node $NodeVersion"
 }
 
-if ($NodeKind -ne 'system') {
+# A bundled runtime left by a previous run is reused when it matches the pin -
+# nodeless machines must not re-download on every installer run. A mismatch
+# (pin bump) or a broken binary falls through to the download, which replaces it.
+if (-not $NodeKind -and (Test-Path (Join-Path $InstallRoot 'node-runtime\node.exe'))) {
+    $BundledBin = Join-Path $InstallRoot 'node-runtime\node.exe'
+    $BundledVersion = $null
+    try { $BundledVersion = (& $BundledBin --version) 2>$null } catch {}
+    if ($BundledVersion -eq "v$NodeVersion") {
+        $NodeBin = $BundledBin
+        Write-Host "==> reusing bundled Node $BundledVersion at $(Join-Path $InstallRoot 'node-runtime')"
+    } else {
+        $BundledState = if ($BundledVersion) { $BundledVersion } else { 'broken' }
+        Write-Host "==> bundled Node is $BundledState - re-downloading v$NodeVersion"
+    }
+}
+
+if (-not $NodeKind -and -not $NodeBin) {
     # Official asset names AND the dist directory carry a leading "v"
     # (https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-x64.zip).
     $NodeFile = "node-v$NodeVersion-win-x64.zip"

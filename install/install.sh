@@ -206,7 +206,21 @@ else
   echo "==> Node not found on PATH — will provision bundled Node $NODE_VERSION"
 fi
 
-if [ "$node_kind" != "system" ]; then
+# A bundled runtime left by a previous run is reused when it matches the pin —
+# nodeless machines must not re-download on every installer run. A version
+# mismatch (pin bump) or a broken binary falls through to the download, which
+# replaces the runtime.
+if [ "$node_kind" != "system" ] && [ -x "$install_root/node-runtime/bin/node" ]; then
+  bundled_version=$("$install_root/node-runtime/bin/node" --version 2>/dev/null || echo "")
+  if [ "$bundled_version" = "v$NODE_VERSION" ]; then
+    NODE_BIN="$install_root/node-runtime/bin/node"
+    echo "==> reusing bundled Node $bundled_version at $install_root/node-runtime"
+  else
+    echo "==> bundled Node is ${bundled_version:-broken} — re-downloading v$NODE_VERSION"
+  fi
+fi
+
+if [ -z "${NODE_BIN:-}" ] && [ "$node_kind" != "system" ]; then
   # Official asset names AND dist directories carry a leading "v"
   # (https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.gz).
   node_file="node-v$NODE_VERSION-$node_os_arch.tar.gz"
