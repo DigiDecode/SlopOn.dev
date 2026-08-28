@@ -433,7 +433,16 @@ jobs:
           echo '::group::upgrade with everything stopped preserves ~/.slopon'
           apikey_before=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.HOME + "/.slopon/config.json", "utf8")).server.apiKey')
           if [ "$MODE" = live ]; then
-            curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh
+            # Second real install of the leg — must reuse the archive the
+            # first install cached instead of re-downloading ~20 MB.
+            curl -fsSL "https://slopon.dev/install.sh?src=ci" | sh > "$RUNNER_TEMP/upgrade.log" 2>&1 || {
+              cat "$RUNNER_TEMP/upgrade.log"; exit 1; }
+            grep -q 'reusing cached release archive' "$RUNNER_TEMP/upgrade.log" || {
+              echo '::error::second live install re-downloaded the release archive instead of reusing the cache'; exit 1
+            }
+            if grep -q '==> downloading slopon-' "$RUNNER_TEMP/upgrade.log"; then
+              echo '::error::second live install downloaded the release archive'; exit 1
+            fi
           else
             SLOPON_ARCHIVE="$PWD/out/slopon-${{ matrix.leg }}.$ext" sh install/install.sh
           fi
@@ -615,6 +624,14 @@ jobs:
           try {
             if ($env:MODE -eq 'live') {
               powershell.exe -NoProfile -c "irm https://slopon.dev/install.ps1?src=ci | iex" *> rerun3.out
+              # Second real install of the leg — must reuse the archive the
+              # first install cached instead of re-downloading ~20 MB.
+              if (-not (Select-String -Path rerun3.out -Pattern 'reusing cached release archive' -Quiet)) {
+                Write-Host '::error::second live install re-downloaded the release archive instead of reusing the cache'; exit 1
+              }
+              if (Select-String -Path rerun3.out -Pattern '==> downloading slopon-' -Quiet) {
+                Write-Host '::error::second live install downloaded the release archive'; exit 1
+              }
             } else {
               powershell.exe -NoProfile -ExecutionPolicy Bypass -File install/install.ps1 *> rerun3.out
             }
