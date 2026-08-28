@@ -471,8 +471,13 @@ jobs:
           case "${{ matrix.leg }}" in
             linux-x64)
               grep -q 'SlopOn installer' "$HOME/.profile" || { echo '::error::~/.profile PATH block missing'; exit 1; }
+              grep -q 'SlopOn installer' "$HOME/.bashrc" || { echo '::error::~/.bashrc PATH block missing'; exit 1; }
               # A real login shell must resolve the command via .profile.
               sh -l -c 'command -v slopon' || { echo '::error::login sh does not resolve slopon'; exit 1; }
+              # A real interactive non-login shell (what terminals spawn) must
+              # resolve it via .bashrc — without that, slopon only appears
+              # after the next full login.
+              bash -ic 'command -v slopon' 2>/dev/null || { echo '::error::interactive non-login bash does not resolve slopon'; exit 1; }
               ;;
             *)
               grep -q 'SlopOn installer' "$HOME/.zprofile" || { echo '::error::~/.zprofile PATH block missing'; exit 1; }
