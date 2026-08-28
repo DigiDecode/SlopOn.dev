@@ -70,8 +70,11 @@ jobs:
           # nodejs.org/dist URLs must exist. (Field failure this guards:
           # node-<ver>…/dist/<ver> 404ing because official names carry a
           # leading "v" — dist dirs too.)
-          sh_ver=$(sed -n 's/^NODE_VERSION="\([0-9.]*\)"$/\1/p' install/install.sh)
-          ps_ver=$(sed -n "s/^\$NodeVersion = '\([0-9.]*\)'\$/\1/p" install/install.ps1)
+          # tr -d '\r' runs BEFORE sed: .gitattributes materializes install.ps1
+          # with CRLF on Linux checkouts (eol=crlf), and a trailing \r defeats
+          # sed's end-of-line anchor, emptying the parse.
+          sh_ver=$(tr -d '\r' < install/install.sh | sed -n 's/^NODE_VERSION="\([0-9.]*\)"$/\1/p')
+          ps_ver=$(tr -d '\r' < install/install.ps1 | sed -n "s/^\$NodeVersion = '\([0-9.]*\)'\$/\1/p")
           if [ -z "$sh_ver" ] || [ "$sh_ver" != "$ps_ver" ]; then
             echo "::error::Node pins differ or unparsable (install.sh='$sh_ver' install.ps1='$ps_ver')"; exit 1
           fi
