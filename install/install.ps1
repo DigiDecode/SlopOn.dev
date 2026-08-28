@@ -1,4 +1,4 @@
-﻿# SlopOn installer for Windows x64 (Windows PowerShell 5.1 compatible).
+# SlopOn installer for Windows x64 (Windows PowerShell 5.1 compatible).
 #
 #   powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
 #
