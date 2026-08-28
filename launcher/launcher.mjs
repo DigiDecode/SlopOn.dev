@@ -161,7 +161,7 @@ function spawnBackend(nodeBin) {
   });
   writePidfile(child.pid);
   log(`backend spawned (pid ${child.pid})`);
-  return () => spawnFailed;
+  return { failed: () => spawnFailed, pid: child.pid };
 }
 
 function spawnGui() {
@@ -187,17 +187,26 @@ function spawnGui() {
 }
 
 // Single shared budget covering fresh-install config appearance + TCP accept.
-async function awaitReadiness(initialTarget, isSpawnFailed) {
+// backendPid enables a fail-fast when the spawned backend dies mid-startup.
+// expectPortMove (stale-pidfile start onto a busy configured port) withholds
+// probing until the backend has persisted its move — probing the busy port
+// earlier would hit whatever holds it and fake readiness.
+async function awaitReadiness(initialTarget, isSpawnFailed, backendPid, expectPortMove) {
   const deadline = Date.now() + READY_BUDGET_MS;
   let target = initialTarget;
   while (Date.now() < deadline) {
     if (isSpawnFailed()) {
       throw new Error(`backend spawn failed — see ${backendLogPath}`);
     }
-    if (target === null) {
-      target = readConfigTarget(); // appears during the backend's first boot
+    if (backendPid !== undefined && !isPidAlive(backendPid)) {
+      throw new Error(`backend (pid ${backendPid}) exited during startup — see ${backendLogPath}`);
     }
-    if (target !== null && (await probeTcp(target.host, target.port))) {
+    // Re-read every poll: the config appears during first-boot provisioning,
+    // and the backend rewrites it when it moves off a busy configured port.
+    target = readConfigTarget() ?? target;
+    const movedOffTheBusyPort =
+      !expectPortMove || (target !== null && target.port !== initialTarget?.port);
+    if (target !== null && movedOffTheBusyPort && (await probeTcp(target.host, target.port))) {
       return target;
     }
     await sleep(POLL_MS);
@@ -223,21 +232,30 @@ async function start() {
     }
   }
 
-  if (target !== null) {
-    const listening = await probeTcp(target.host, target.port);
-    if (listening) {
-      if (pid !== null && isPidAlive(pid)) {
-        log(`backend already running (pid ${pid}) on ${target.host}:${target.port}`);
-      } else {
-        log(`warning: ${target.host}:${target.port} is listening without a live pidfile — backend was started manually or by an unknown listener; not spawning a second one`);
-      }
+  let expectPortMove = false;
+  if (target !== null && (await probeTcp(target.host, target.port))) {
+    if (pid !== null && isPidAlive(pid)) {
+      log(`backend already running (pid ${pid}) on ${target.host}:${target.port}`);
       spawnGui();
       return;
     }
+    if (pid === null) {
+      log(
+        `warning: ${target.host}:${target.port} is listening but no pidfile exists — if no backend was started manually, stop whatever holds the port or set a different "server.port" in ${configPath}; not spawning a second one`,
+      );
+      spawnGui();
+      return;
+    }
+    // Stale pidfile: the recorded backend is gone, so whatever holds the
+    // configured port is foreign. Spawning is safe — the backend moves to the
+    // next free port and persists it, and readiness waits for that persisted
+    // move before trusting a probe.
+    log(`stale pidfile (pid ${pid} is gone) while ${target.host}:${target.port} is in use — spawning a backend; it will move to the next free port and update ${configPath}`);
+    expectPortMove = true;
   }
 
-  const isSpawnFailed = spawnBackend(resolveNode());
-  const ready = await awaitReadiness(target, isSpawnFailed);
+  const spawned = spawnBackend(resolveNode());
+  const ready = await awaitReadiness(target, spawned.failed, spawned.pid, expectPortMove);
   log(`backend ready on ${ready.host}:${ready.port}`);
   spawnGui();
 }
