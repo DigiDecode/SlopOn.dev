@@ -59,8 +59,10 @@ launcher shortcut):
 
 Installs per-user (no admin). Windows on ARM and Linux ARM are not supported
 yet — the installer refuses with a clear message. Upgrading = re-run the
-one-liner with SlopOn stopped (backend **and** app); `~/.slopon` (config,
-database, attachments) is preserved untouched.
+one-liner; if the backend **and/or** the app is still running, an interactive
+installer offers to stop them for you (the default leaves stopping to you and
+prints how). `~/.slopon` (config, database, attachments) is preserved
+untouched.
 
 The installer also puts a `slopon` command on your PATH: open a **new**
 terminal and `slopon` starts the backend and the app, `slopon --stop` stops

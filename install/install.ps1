@@ -1,4 +1,4 @@
-# SlopOn installer for Windows x64 (Windows PowerShell 5.1 compatible).
+﻿# SlopOn installer for Windows x64 (Windows PowerShell 5.1 compatible).
 #
 #   powershell -NoProfile -c "irm https://slopon.dev/install.ps1 | iex"
 #
@@ -157,32 +157,101 @@ if (-not $IsUrl) {
 }
 
 # ── 3. Refuse to upgrade while SlopOn is running ───────────────────────────
-if (Test-Path $PidFile) {
-    $RunningPid = 0
-    try { $RunningPid = [int](Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1) } catch {}
-    if ($RunningPid -gt 0 -and (Get-Process -Id $RunningPid -ErrorAction SilentlyContinue)) {
-        Fail ("the SlopOn backend (PID {0}) is running.`n         Stop it first:  taskkill /PID {0} /T`n         (or run `"{1}\launcher\slopon.cmd`" --stop)`n         then re-run the installer." -f $RunningPid, $InstallRoot)
+# SlopOn must be stopped for an update. Interactive users get the choice;
+# non-interactive runs (CI, piped without a console) always take the manual
+# default, which exits non-zero with the instructions.
+function Read-ConsoleLine {
+    $Reply = $null
+    try {
+        # under `irm | iex` the SCRIPT arrives on the pipeline while console
+        # stdin stays interactive; redirected stdin (CI) must not block
+        if (-not [Console]::IsInputRedirected -and [Console]::In.Peek() -ge 0) {
+            $Reply = [Console]::In.ReadLine()
+        }
+    } catch {}
+    return $Reply
+}
+function Confirm-AutoStop([string]$Reason) {  # $true only when the user picks auto-stop
+    Write-Host "==> $Reason"
+    Write-Host "    SlopOn must be stopped before it can be updated."
+    Write-Host ""
+    Write-Host "      1) I'll stop it myself (default)"
+    Write-Host "      2) Stop them for me - closes the SlopOn app and stops the backend"
+    Write-Host -NoNewline "    Choose [1]: "
+    $Reply = Read-ConsoleLine
+    return ($null -ne $Reply -and $Reply.Trim() -eq '2')
+}
+function Stop-RunningInstances {  # best-effort: close the app, then stop the backend
+    # graceful close (no /F) so the app can shut down cleanly; a hidden console
+    # process without windows simply survives it
+    try { taskkill /IM slopon_dev.exe 2>$null | Out-Null } catch {}
+    foreach ($i in 1..10) {
+        if (-not (Get-Process -Name 'slopon_dev' -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Seconds 1
+    }
+    # the launcher's --stop is the graceful path: waits for exit, removes the pidfile
+    $LauncherStop = Join-Path $InstallRoot 'launcher\slopon.cmd'
+    if (Test-Path $LauncherStop) {
+        try { & $LauncherStop --stop 2>$null | Out-Null } catch {}
     }
 }
+function Test-PortOpen([string]$Ip, [int]$Port) {
+    $Open = $false
+    $Tcp = New-Object Net.Sockets.TcpClient
+    try {
+        $Connect = $Tcp.BeginConnect($Ip, $Port, $null, $null)
+        if ($Connect.AsyncWaitHandle.WaitOne(1500) -and $Tcp.Connected) { $Open = $true }
+    } catch {
+    } finally { $Tcp.Close() }
+    return $Open
+}
+
+$RunningPid = 0
+if (Test-Path $PidFile) {
+    try { $RunningPid = [int](Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1) } catch {}
+}
+if ($RunningPid -gt 0 -and (Get-Process -Id $RunningPid -ErrorAction SilentlyContinue)) {
+    if (-not (Confirm-AutoStop "the SlopOn backend (PID $RunningPid) is running")) {
+        Fail ("the SlopOn backend (PID {0}) is running.`n         Stop it first:  taskkill /PID {0} /T`n         (or run & `"{1}\launcher\slopon.cmd`" --stop)`n         then re-run the installer." -f $RunningPid, $InstallRoot)
+    }
+    Stop-RunningInstances
+    if (Get-Process -Id $RunningPid -ErrorAction SilentlyContinue) {
+        Fail ("the SlopOn backend (PID {0}) is still running after the automatic stop attempt.`n         Stop it first:  taskkill /PID {0} /T`n         then re-run the installer." -f $RunningPid)
+    }
+    Write-Host "==> stopped the SlopOn app and backend - continuing"
+}
+
+$ProbeIp = '127.0.0.1'
+$ProbePort = $null
 if (Test-Path $ConfigFile) {
     try { $Cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json } catch { $Cfg = $null }
     if ($Cfg -and $Cfg.server -and $Cfg.server.port) {
-        $ProbeIp = '127.0.0.1'
+        $ProbePort = [int]$Cfg.server.port
         if ($Cfg.server.listenIp -and $Cfg.server.listenIp -ne '0.0.0.0' -and $Cfg.server.listenIp -ne '::') {
             $ProbeIp = $Cfg.server.listenIp
         }
-        $Tcp = New-Object Net.Sockets.TcpClient
-        try {
-            $Connect = $Tcp.BeginConnect($ProbeIp, [int]$Cfg.server.port, $null, $null)
-            if ($Connect.AsyncWaitHandle.WaitOne(1500) -and $Tcp.Connected) {
-                Fail ("something is listening on {0}:{1} (the backend was likely started manually).`n         Stop it first (taskkill or the launcher --stop helper),`n         then re-run the installer." -f $ProbeIp, $Cfg.server.port)
-            }
-        } catch {
-        } finally { $Tcp.Close() }
     }
 }
+if ($ProbePort -and (Test-PortOpen $ProbeIp $ProbePort)) {
+    if (-not (Confirm-AutoStop "something is listening on ${ProbeIp}:${ProbePort} (the backend was likely started manually)")) {
+        Fail ("something is listening on {0}:{1} (the backend was likely started manually).`n         Stop it first (taskkill or the launcher --stop helper),`n         then re-run the installer." -f $ProbeIp, $ProbePort)
+    }
+    Stop-RunningInstances
+    if (Test-PortOpen $ProbeIp $ProbePort) {
+        Fail ("something is still listening on {0}:{1} after the automatic stop attempt (a manually started backend has no pidfile for the launcher to stop).`n         Stop it yourself, then re-run the installer." -f $ProbeIp, $ProbePort)
+    }
+    Write-Host "==> stopped the SlopOn app and backend - continuing"
+}
+
 if (Get-Process -Name 'slopon_dev' -ErrorAction SilentlyContinue) {
-    Fail "the SlopOn app (slopon_dev) is running.`n         Close the SlopOn app, then re-run the installer."
+    if (-not (Confirm-AutoStop "the SlopOn app (slopon_dev) is running")) {
+        Fail "the SlopOn app (slopon_dev) is running.`n         Close the SlopOn app, then re-run the installer."
+    }
+    Stop-RunningInstances
+    if (Get-Process -Name 'slopon_dev' -ErrorAction SilentlyContinue) {
+        Fail "the SlopOn app (slopon_dev) is still running after the automatic stop attempt.`n         Close the SlopOn app, then re-run the installer."
+    }
+    Write-Host "==> stopped the SlopOn app - continuing"
 }
 
 # ── 4. Node runtime: system Node 20/22, else a pinned bundled Node 22 ─────
@@ -427,7 +496,7 @@ Write-Host "                 process cannot modify its parent's PATH). To use it
 Write-Host "                 terminal that ran this installer, paste:"
 Write-Host "                   `$env:Path += ';$(Join-Path $InstallRoot 'launcher')'"
 Write-Host "                 direct: $(Join-Path $InstallRoot 'launcher\slopon.cmd')"
-Write-Host "  Stop backend : `"$(Join-Path $InstallRoot 'launcher\slopon.cmd')`" --stop  (best-effort hard kill)"
+Write-Host "  Stop backend : & `"$(Join-Path $InstallRoot 'launcher\slopon.cmd')`" --stop  (best-effort hard kill)"
 Write-Host "  Logs         : $(Join-Path $SloponHome 'logs\backend.log') and launcher.log"
 if ($NodeKind -ne 'system') {
     Write-Host "  Node runtime : bundled $NodeVersion at $(Join-Path $InstallRoot 'node-runtime')"

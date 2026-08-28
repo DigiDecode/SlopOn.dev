@@ -81,7 +81,7 @@ esac
 SLOPON_HOME="$HOME/.slopon"
 CONFIG_FILE="$SLOPON_HOME/config.json"
 PID_FILE="$SLOPON_HOME/backend.pid"
-stop_command="$install_root/launcher/slopon.sh --stop"
+stop_command="\"$install_root/launcher/slopon.sh\" --stop"
 
 echo "==> SlopOn installer: $platform -> $install_root"
 
@@ -189,38 +189,103 @@ else
 fi
 
 # ── 3. Refuse to upgrade while SlopOn is running ───────────────────────────
-if [ -f "$PID_FILE" ]; then
+# SlopOn must be stopped for an update. Interactive users get the choice;
+# non-interactive runs (CI, piped without a terminal) always take the manual
+# default, which exits non-zero with the instructions.
+confirm_auto_stop() {  # $1 = reason; returns 0 only when the user picks auto-stop
+  echo "==> $1"
+  echo "    SlopOn must be stopped before it can be updated."
+  echo ""
+  echo "      1) I'll stop it myself (default)"
+  echo "      2) Stop them for me - closes the SlopOn app and stops the backend"
+  printf '    Choose [1]: '
+  reply=""
+  # stdin is the SCRIPT under `curl | sh`, so the answer must come from the tty
+  if { read -r reply < /dev/tty; } 2>/dev/null; then :; fi
+  [ "${reply:-}" = "2" ]
+}
+
+stop_running_instances() {  # best-effort: close the app, then stop the backend
+  if command -v pkill >/dev/null 2>&1; then
+    # -x: only the exact process name; never a foreign process that merely
+    # mentions slopon_dev in its command line
+    pkill -x slopon_dev 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 10 ] && command -v pgrep >/dev/null 2>&1 \
+       && pgrep -x slopon_dev >/dev/null 2>&1; do
+      sleep 1
+      i=$((i + 1))
+    done
+  fi
+  # the launcher's --stop is the graceful path: SIGTERM, waits for exit,
+  # removes the pidfile (a no-op when no pidfile-backed backend exists)
+  if [ -x "$install_root/launcher/slopon.sh" ]; then
+    "$install_root/launcher/slopon.sh" --stop >/dev/null 2>&1 || true
+  fi
+}
+
+backend_running() {
+  [ -f "$PID_FILE" ] || return 1
   running_pid=$(sed -n 's/^\([0-9][0-9]*\).*/\1/p' "$PID_FILE" | head -n 1)
-  if [ -n "${running_pid:-}" ] && kill -0 "$running_pid" 2>/dev/null; then
-    fail "the SlopOn backend (PID $running_pid) is running.
+  [ -n "${running_pid:-}" ] && kill -0 "$running_pid" 2>/dev/null
+}
+
+if backend_running; then
+  confirm_auto_stop "the SlopOn backend (PID $running_pid) is running" \
+    || fail "the SlopOn backend (PID $running_pid) is running.
+         Stop it first:  $stop_command
+         then re-run the installer."
+  stop_running_instances
+  if backend_running; then
+    fail "the SlopOn backend (PID $running_pid) is still running after the automatic stop attempt.
          Stop it first:  $stop_command
          then re-run the installer."
   fi
+  echo "==> stopped the SlopOn app and backend - continuing"
 fi
-if [ -f "$CONFIG_FILE" ]; then
+
+port_busy() {
+  [ -f "$CONFIG_FILE" ] || return 1
   cfg_port=$(sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$CONFIG_FILE" | head -n 1)
   cfg_ip=$(sed -n 's/.*"listenIp"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_FILE" | head -n 1)
   [ -n "$cfg_ip" ] || cfg_ip="127.0.0.1"
   [ "$cfg_ip" = "0.0.0.0" ] || [ "$cfg_ip" = "::" ] && cfg_ip="127.0.0.1"
-  if [ -n "${cfg_port:-}" ] && command -v node >/dev/null 2>&1; then
-    # Pure POSIX sh has no /dev/tcp (that is a bashism); node — which must
-    # exist for a manually-started backend anyway — provides the TCP probe.
-    if node -e '
-      const net = require("net");
-      const s = net.connect({ host: process.argv[1], port: Number(process.argv[2]) });
-      s.setTimeout(1500, () => { s.destroy(); process.exit(1); });
-      s.on("connect", () => process.exit(0));
-      s.on("error", () => process.exit(1));
-    ' "$cfg_ip" "$cfg_port" 2>/dev/null; then
-      fail "something is listening on $cfg_ip:$cfg_port (the backend was likely started manually).
+  [ -n "${cfg_port:-}" ] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  # Pure POSIX sh has no /dev/tcp (that is a bashism); node — which must
+  # exist for a manually-started backend anyway — provides the TCP probe.
+  node -e '
+    const net = require("net");
+    const s = net.connect({ host: process.argv[1], port: Number(process.argv[2]) });
+    s.setTimeout(1500, () => { s.destroy(); process.exit(1); });
+    s.on("connect", () => process.exit(0));
+    s.on("error", () => process.exit(1));
+  ' "$cfg_ip" "$cfg_port" 2>/dev/null
+}
+
+if port_busy; then
+  confirm_auto_stop "something is listening on $cfg_ip:$cfg_port (the backend was likely started manually)" \
+    || fail "something is listening on $cfg_ip:$cfg_port (the backend was likely started manually).
          Stop it first:  $stop_command
          then re-run the installer."
-    fi
+  stop_running_instances
+  if port_busy; then
+    fail "something is still listening on $cfg_ip:$cfg_port after the automatic stop attempt (a manually started backend has no pidfile for the launcher to stop).
+         Stop it yourself, then re-run the installer."
   fi
+  echo "==> stopped the SlopOn backend and app - continuing"
 fi
+
 if command -v pgrep >/dev/null 2>&1 && pgrep -f slopon_dev >/dev/null 2>&1; then
-  fail "the SlopOn app (slopon_dev) is running.
+  confirm_auto_stop "the SlopOn app (slopon_dev) is running" \
+    || fail "the SlopOn app (slopon_dev) is running.
          Close the SlopOn app, then re-run the installer."
+  stop_running_instances
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f slopon_dev >/dev/null 2>&1; then
+    fail "the SlopOn app (slopon_dev) is still running after the automatic stop attempt.
+         Close the SlopOn app, then re-run the installer."
+  fi
+  echo "==> stopped the SlopOn app - continuing"
 fi
 
 # ── 4. Node runtime: system Node 20/22, else a pinned bundled Node 22 ─────
