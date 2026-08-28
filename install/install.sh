@@ -297,6 +297,11 @@ chmod +x "$install_root/launcher/slopon.sh" || fail "could not make launcher/slo
 if [ "$platform" = "linux-x64" ]; then
   chmod +x "$install_root/frontend/slopon_dev" || fail "could not make frontend/slopon_dev executable"
 fi
+# Record the Node we validated, next to slopon.sh: desktop-menu launches run
+# with a minimal PATH (GNOME omits nvm/user dirs), where bare `node` does not
+# resolve. slopon.sh prefers node-runtime, then this file, then PATH.
+printf '%s\n' "$NODE_BIN" > "$install_root/launcher/node.path" 2>/dev/null \
+  || warn "could not record the Node path for the desktop launcher — the menu entry may not start if 'node' is not on the system PATH"
 
 # ── 7. Backend dependencies (lockfile-driven) ──────────────────────────────
 echo "==> installing backend dependencies (npm ci)"
@@ -420,6 +425,9 @@ echo "  Install root : $install_root"
 echo "  Start        : 'slopon' in a NEW terminal, or launch SlopOn from"
 echo "                 your applications folder/menu"
 echo "                 (direct: $install_root/launcher/slopon.sh)"
+# A piped `curl | sh` runs in a child shell — it cannot export PATH back into
+# the terminal that launched it, so give the exact line to run right now.
+echo "                 (this session: export PATH=\"$HOME/.local/bin:\$PATH\")"
 echo "  Stop backend : $stop_command"
 echo "  Logs         : $SLOPON_HOME/logs/backend.log and launcher.log"
 if [ "$node_kind" != "system" ]; then

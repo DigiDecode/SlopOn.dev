@@ -187,10 +187,12 @@ if ($NodeKind -ne 'system') {
     $RuntimeDir = Join-Path $InstallRoot 'node-runtime'
     if (Test-Path $RuntimeDir) { Remove-Item $RuntimeDir -Recurse -Force }
     New-Item -ItemType Directory -Path $RuntimeDir | Out-Null
-    # The zip wraps a top-level node-vX-win-x64\ directory: extract, then move
-    # its contents up one level so node.exe lands at node-runtime\node.exe.
+    # The zip was downloaded by Invoke-WebRequest, so every extracted file
+    # carries the Mark-of-the-Web; Unblock-File just deletes the
+    # Zone.Identifier stream so the runtime is not SmartScreen-gated.
     $Unpack = Join-Path $Tmp 'node-unpack'
     Expand-Archive -Path $NodeZip -DestinationPath $Unpack -Force
+    Get-ChildItem -Path $Unpack -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
     $Wrapped = Get-ChildItem -Path $Unpack -Directory | Select-Object -First 1
     if (-not $Wrapped) { Fail 'Node zip did not wrap the expected top-level directory' }
     Move-Item -Path (Join-Path $Wrapped.FullName '*') -Destination $RuntimeDir
@@ -240,6 +242,11 @@ if (Get-Command git -ErrorAction SilentlyContinue) {
 Write-Host '==> extracting release payload'
 $ExtractDir = Join-Path $Tmp 'extract'
 Expand-Archive -Path $Archive -DestinationPath $ExtractDir -Force
+# The archive was downloaded by Invoke-WebRequest, so every extracted file
+# carries the Mark-of-the-Web; SmartScreen can then silently block the
+# unsigned GUI exe when the launcher (or the user) starts it.
+# Unblock-File just deletes the Zone.Identifier stream.
+Get-ChildItem -Path $ExtractDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 $Payload = Get-ChildItem -Path $ExtractDir -Directory | Select-Object -First 1
 if (-not $Payload) { Fail 'archive does not wrap a top-level slopon-<platform>\ directory' }
 foreach ($Dir in 'frontend', 'backend', 'launcher') {

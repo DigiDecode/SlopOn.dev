@@ -166,13 +166,18 @@ function spawnBackend(nodeBin) {
 
 function spawnGui() {
   const options = { detached: true, stdio: 'ignore', windowsHide: true };
+  let child;
   if (IS_WIN) {
-    spawn(path.join(installRoot, 'frontend', 'slopon_dev.exe'), [], options).unref();
+    child = spawn(path.join(installRoot, 'frontend', 'slopon_dev.exe'), [], options);
   } else if (IS_MAC) {
-    spawn('open', [path.join(installRoot, 'frontend', 'slopon_dev.app')], options).unref();
+    child = spawn('open', [path.join(installRoot, 'frontend', 'slopon_dev.app')], options);
   } else {
-    spawn(path.join(installRoot, 'frontend', 'slopon_dev'), [], options).unref();
+    child = spawn(path.join(installRoot, 'frontend', 'slopon_dev'), [], options);
   }
+  child.unref();
+  // The spawn is fire-and-forget, but an EXECUTION failure (missing binary,
+  // antivirus quarantine) must not vanish as an unhandled 'error' event.
+  child.once('error', (err) => log(`GUI spawn failed: ${err.message}`));
   log('GUI launched');
 }
 

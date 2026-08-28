@@ -395,6 +395,13 @@ jobs:
             if node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port"; then break; fi
             sleep 1
           done
+          if [ "${{ matrix.leg }}" = "linux-x64" ]; then
+            # GNOME launches .desktop entries with a minimal PATH (no nvm or
+            # user dirs), where bare `node` does not resolve — slopon.sh must
+            # find Node via the installer-baked launcher/node.path.
+            env -i HOME="$HOME" PATH=/usr/bin:/bin "$INSTALL/launcher/slopon.sh" \
+              || { echo '::error::slopon.sh failed under a GNOME-like minimal PATH (node.path not used?)'; exit 1; }
+          fi
           PATH="$HOME/.local/bin:$PATH" slopon --stop
           for i in $(seq 1 15); do
             if ! node -e 'const n=require("net");const s=n.connect({host:"127.0.0.1",port:+process.argv[1]});s.setTimeout(1000,()=>{s.destroy();process.exit(1)});s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));' "$port" 2>/dev/null; then break; fi
